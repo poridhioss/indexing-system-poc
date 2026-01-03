@@ -99,24 +99,7 @@ npm install web-tree-sitter tree-sitter-javascript tree-sitter-typescript tree-s
 
 ### Core Architecture
 
-```
-┌─────────────────────────────────────────────────────────────────────────────────┐
-│                         SEMANTIC CHUNKER ARCHITECTURE                            │
-├─────────────────────────────────────────────────────────────────────────────────┤
-│                                                                                  │
-│   Source Code ──► Tree-sitter ──► AST ──► Node Filter ──► Size Check ──► Chunks │
-│                                              │               │                   │
-│                                              ▼               ▼                   │
-│                                        Function?         Too big?                │
-│                                        Class?            Split children          │
-│                                        Method?           or fallback             │
-│                                              │               │                   │
-│                                              ▼               ▼                   │
-│                                         Extract           Recurse                │
-│                                         Metadata          or Line-split          │
-│                                                                                  │
-└─────────────────────────────────────────────────────────────────────────────────┘
-```
+![Core Architecture](./images/infra-1.svg)
 
 ### Step 1: Define Semantic Node Types
 
@@ -566,8 +549,6 @@ class SemanticChunker {
 module.exports = { SemanticChunker, DEFAULT_CONFIG };
 ```
 
----
-
 ## Part 3: Using the Chunker
 
 ### Basic Usage Example
@@ -722,59 +703,9 @@ main().catch(console.error);
 ```
 
 **Expected Output:**
-```
-=== JavaScript Chunks ===
 
---- Chunk 1 ---
-Type: block
-Name: (none)
-Lines: 1-6 (6 lines)
-Size: 89 characters
-Metadata: { gapFill: true }
-Preview: /**
- * User management module
- */
-import { db } from './data...
-
---- Chunk 2 ---
-Type: function
-Name: getUser
-Lines: 8-19 (12 lines)
-Size: 312 characters
-Metadata: { parameters: [ 'id' ], async: true }
-Preview: /**
- * Fetch a user by ID
- * @param {string} id - User ID...
-
---- Chunk 3 ---
-Type: class
-Name: UserService
-Lines: 21-40 (20 lines)
-Size: 456 characters
-Metadata: {}
-Preview: /**
- * User service class
- */
-class UserService {...
-
---- Chunk 4 ---
-Type: function
-Name: validateEmail
-Lines: 42-44 (3 lines)
-Size: 78 characters
-Metadata: { parameters: [ 'email' ] }
-Preview: const validateEmail = (email) => {...
-
---- Chunk 5 ---
-Type: block
-Name: (none)
-Lines: 46-46 (1 lines)
-Size: 52 characters
-Metadata: { gapFill: true }
-Preview: export { getUser, UserService, validateEmail };...
-```
-
----
+![Example Output](./images/image-1.png)
+![Example Output 2](./images/image-2.png)
 
 ## Part 4: Advanced Features
 
@@ -1257,8 +1188,6 @@ export { ShoppingCart, formatCurrency };
 demo().catch(console.error);
 ```
 
----
-
 ## Summary
 
 In this lab, you learned:
@@ -1281,8 +1210,6 @@ In this lab, you learned:
 4. **Contextualized text helps embeddings** - AI understands scope and relationships
 5. **Fallback is important** - Some files can't be parsed, handle gracefully
 
----
-
 ## What's Next
 
 In upcoming labs, you'll use this semantic chunker to:
@@ -1291,26 +1218,3 @@ In upcoming labs, you'll use this semantic chunker to:
 - **Chunk Hashing**: Generate content-based hashes for chunks
 - **Merkle Tree**: Implement file-level Merkle trees for incremental re-indexing
 - **Embedding Database**: Store and query embeddings for semantic search
-
----
-
-## Exercises
-
-1. **Add TypeScript Support**: Load the TypeScript grammar and test with `.ts` files
-
-2. **Extract Docstrings**: Include JSDoc/docstrings in chunk metadata
-
-3. **Dependency Analysis**: Track which chunks import/reference other chunks
-
-4. **Deduplication**: Detect and deduplicate identical chunks across files
-
-5. **Benchmark**: Compare embedding quality between line-based and semantic chunking
-
----
-
-## Resources
-
-- [Tree-sitter Documentation](https://tree-sitter.github.io/tree-sitter/)
-- [AST-Aware Code Chunking (Supermemory)](https://supermemory.ai/blog/building-code-chunk-ast-aware-code-chunking/)
-- [Aider Tree-sitter Chunking](https://aider.chat/2024/09/09/treesitter.html)
-- [code-chunk npm package](https://www.npmjs.com/package/code-chunk)
