@@ -1,0 +1,22 @@
+{
+  "name": "file-watcher",
+  "version": "1.0.0",
+  "description": "Simple file watcher demonstration for code indexing",
+  "main": "src/example.js",
+  "scripts": {
+    "start": "node src/example.js",
+    "watch": "node src/watcher.js",
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [
+    "file-watcher",
+    "chokidar",
+    "code-indexing",
+    "change-detection"
+  ],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "chokidar": "^5.0.0"
+  }
+}

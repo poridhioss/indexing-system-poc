@@ -95,6 +95,32 @@ mkdir semantic-chunker
 cd semantic-chunker
 npm init -y
 npm install web-tree-sitter tree-sitter-javascript tree-sitter-typescript tree-sitter-python
+npm install -D typescript ts-node @types/node
+```
+
+Create `tsconfig.json`:
+
+```json
+{
+  "compilerOptions": {
+    "target": "ES2020",
+    "module": "commonjs",
+    "lib": ["ES2020"],
+    "outDir": "./dist",
+    "rootDir": "./src",
+    "strict": true,
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "forceConsistentCasingInFileNames": true,
+    "declaration": true,
+    "declarationMap": true,
+    "sourceMap": true,
+    "resolveJsonModule": true,
+    "moduleResolution": "node"
+  },
+  "include": ["src/**/*"],
+  "exclude": ["node_modules", "dist"]
+}
 ```
 
 ### Core Architecture
@@ -103,14 +129,34 @@ npm install web-tree-sitter tree-sitter-javascript tree-sitter-typescript tree-s
 
 ### Step 1: Define Semantic Node Types
 
-Create `src/semantic-nodes.js`:
+Create `src/semantic-nodes.ts`:
 
-```javascript
+```typescript
 /**
  * Semantic node types for different languages
  * These are AST node types that represent meaningful code units
  */
-const SEMANTIC_NODES = {
+
+export type SupportedLanguage = 'javascript' | 'typescript' | 'python' | 'go' | 'rust';
+
+export interface LanguageNodeTypes {
+    function?: string[];
+    class?: string[];
+    method?: string[];
+    arrow?: string[];
+    variable?: string[];
+    export?: string[];
+    interface?: string[];
+    type?: string[];
+    enum?: string[];
+    decorated?: string[];
+    struct?: string[];
+    impl?: string[];
+    trait?: string[];
+    mod?: string[];
+}
+
+export const SEMANTIC_NODES: Record<SupportedLanguage, LanguageNodeTypes> = {
     javascript: {
         // Top-level declarations
         function: ['function_declaration', 'generator_function_declaration'],
@@ -157,144 +203,206 @@ const SEMANTIC_NODES = {
 /**
  * Get all semantic node types for a language (flattened)
  */
-function getSemanticTypes(language) {
-    const langNodes = SEMANTIC_NODES[language];
+export function getSemanticTypes(language: string): string[] {
+    const langNodes = SEMANTIC_NODES[language as SupportedLanguage];
     if (!langNodes) return [];
     return Object.values(langNodes).flat();
 }
-
-module.exports = { SEMANTIC_NODES, getSemanticTypes };
 ```
 
 ### Step 2: The Chunk Data Structure
 
-Create `src/chunk.js`:
+Create `src/chunk.ts`:
 
-```javascript
+```typescript
+/**
+ * Types for semantic code chunks
+ */
+
+export type ChunkType =
+    | 'function'
+    | 'class'
+    | 'method'
+    | 'interface'
+    | 'type'
+    | 'enum'
+    | 'struct'
+    | 'impl'
+    | 'trait'
+    | 'block';
+
+export interface ChunkMetadata {
+    parent?: string;
+    parameters?: string[];
+    returnType?: string;
+    async?: boolean;
+    exported?: boolean;
+    gapFill?: boolean;
+    fallback?: boolean;
+    [key: string]: unknown;
+}
+
+export interface SemanticChunkOptions {
+    text: string;
+    type: ChunkType;
+    name: string | null;
+    lineStart: number;
+    lineEnd: number;
+    language: string;
+    metadata?: ChunkMetadata;
+}
+
 /**
  * Represents a semantic code chunk
  */
-class SemanticChunk {
-    constructor({
-        text,
-        type,
-        name,
-        lineStart,
-        lineEnd,
-        language,
-        metadata = {}
-    }) {
-        this.text = text;
-        this.type = type;           // 'function', 'class', 'method', 'block'
-        this.name = name;           // Function/class name or null
-        this.lineStart = lineStart; // 1-indexed
-        this.lineEnd = lineEnd;     // 1-indexed
-        this.language = language;
-        this.metadata = metadata;   // Extra info (params, return type, etc.)
+export class SemanticChunk {
+    readonly text: string;
+    readonly type: ChunkType;
+    readonly name: string | null;
+    readonly lineStart: number;
+    readonly lineEnd: number;
+    readonly language: string;
+    readonly metadata: ChunkMetadata;
+
+    constructor(options: SemanticChunkOptions) {
+        this.text = options.text;
+        this.type = options.type;
+        this.name = options.name;
+        this.lineStart = options.lineStart;
+        this.lineEnd = options.lineEnd;
+        this.language = options.language;
+        this.metadata = options.metadata ?? {};
     }
 
     /**
      * Character count (for size limits)
      */
-    get charCount() {
+    get charCount(): number {
         return this.text.length;
     }
 
     /**
      * Line count
      */
-    get lineCount() {
+    get lineCount(): number {
         return this.lineEnd - this.lineStart + 1;
     }
 
     /**
      * Create a summary string for debugging
      */
-    toString() {
+    toString(): string {
         return `[${this.type}] ${this.name || '(anonymous)'} (lines ${this.lineStart}-${this.lineEnd}, ${this.charCount} chars)`;
     }
 }
-
-module.exports = { SemanticChunk };
 ```
 
 ### Step 3: The Core Chunker
 
-Create `src/chunker.js`:
+Create `src/chunker.ts`:
 
-```javascript
-const TreeSitter = require('web-tree-sitter');
-const Parser = TreeSitter.Parser;
-const { getSemanticTypes } = require('./semantic-nodes');
-const { SemanticChunk } = require('./chunk');
+```typescript
+import { Parser, Language, Node } from 'web-tree-sitter';
+import { getSemanticTypes } from './semantic-nodes';
+import { SemanticChunk, ChunkType, ChunkMetadata } from './chunk';
 
 /**
  * Configuration for the semantic chunker
  */
-const DEFAULT_CONFIG = {
-    maxChunkSize: 8000,      // Max characters per chunk
-    minChunkSize: 100,       // Min characters (skip tiny chunks)
-    fallbackLineSize: 50,    // Lines per chunk when falling back
-    fallbackOverlap: 10,     // Overlap lines in fallback mode
+export interface ChunkerConfig {
+    maxChunkSize: number;      // Max characters per chunk
+    minChunkSize: number;      // Min characters (skip tiny chunks)
+    fallbackLineSize: number;  // Lines per chunk when falling back
+    fallbackOverlap: number;   // Overlap lines in fallback mode
+}
+
+/**
+ * Default configuration values
+ */
+export const DEFAULT_CONFIG: ChunkerConfig = {
+    maxChunkSize: 8000,
+    minChunkSize: 100,
+    fallbackLineSize: 50,
+    fallbackOverlap: 10,
 };
+
+/**
+ * Language configuration mapping language name to WASM path
+ */
+export type LanguageConfigs = Record<string, string>;
 
 /**
  * AST-based Semantic Code Chunker
  * Splits code by semantic boundaries (functions, classes, etc.)
  */
-class SemanticChunker {
-    constructor(config = {}) {
+export class SemanticChunker {
+    private config: ChunkerConfig;
+    private parser: Parser | null = null;
+    private languages: Map<string, Language> = new Map();
+
+    constructor(config: Partial<ChunkerConfig> = {}) {
         this.config = { ...DEFAULT_CONFIG, ...config };
-        this.parser = null;
-        this.languages = {};
     }
 
     /**
      * Initialize Tree-sitter and load language grammars
      */
-    async initialize(languageConfigs) {
+    async initialize(languageConfigs: LanguageConfigs): Promise<void> {
         await Parser.init();
         this.parser = new Parser();
 
         // Load each language grammar
         for (const [lang, wasmPath] of Object.entries(languageConfigs)) {
-            this.languages[lang] = await TreeSitter.Language.load(wasmPath);
+            const language = await Language.load(wasmPath);
+            this.languages.set(lang, language);
         }
     }
 
     /**
      * Chunk source code into semantic units
      *
-     * @param {string} code - Source code to chunk
-     * @param {string} language - Language identifier (javascript, python, etc.)
-     * @returns {SemanticChunk[]} Array of semantic chunks
+     * @param code - Source code to chunk
+     * @param language - Language identifier (javascript, python, etc.)
+     * @returns Array of semantic chunks
      */
-    chunk(code, language) {
-        if (!this.languages[language]) {
+    chunk(code: string, language: string): SemanticChunk[] {
+        const langGrammar = this.languages.get(language);
+
+        if (!langGrammar || !this.parser) {
             console.warn(`Language '${language}' not loaded, using fallback`);
-            return this._fallbackChunk(code, language);
+            return this.fallbackChunk(code, language);
         }
 
         // Parse the code
-        this.parser.setLanguage(this.languages[language]);
+        this.parser.setLanguage(langGrammar);
         const tree = this.parser.parse(code);
 
+        if (!tree) {
+            console.warn(`Failed to parse code for language '${language}', using fallback`);
+            return this.fallbackChunk(code, language);
+        }
+
         // Extract semantic chunks
-        const chunks = [];
+        const chunks: SemanticChunk[] = [];
         const semanticTypes = getSemanticTypes(language);
 
-        this._extractChunks(tree.rootNode, code, language, semanticTypes, chunks);
+        this.extractChunks(tree.rootNode, code, language, semanticTypes, chunks);
 
         // Fill gaps between chunks
-        const filledChunks = this._fillGaps(chunks, code, language);
-
-        return filledChunks;
+        return this.fillGaps(chunks, code, language);
     }
 
     /**
      * Recursively extract semantic chunks from AST
      */
-    _extractChunks(node, code, language, semanticTypes, chunks, parentName = null) {
+    private extractChunks(
+        node: Node,
+        code: string,
+        language: string,
+        semanticTypes: string[],
+        chunks: SemanticChunk[],
+        parentName: string | null = null
+    ): void {
         // Check if this node is a semantic unit
         if (semanticTypes.includes(node.type)) {
             const text = node.text;
@@ -304,18 +412,18 @@ class SemanticChunker {
             if (charCount >= this.config.minChunkSize) {
                 if (charCount <= this.config.maxChunkSize) {
                     // Good size - extract as a chunk
-                    const chunk = this._createChunk(node, code, language, parentName);
+                    const chunk = this.createChunk(node, code, language, parentName);
                     chunks.push(chunk);
                     return; // Don't recurse into children
                 } else {
                     // Too large - try to split by children
-                    const childChunks = this._splitLargeNode(node, code, language, semanticTypes);
+                    const childChunks = this.splitLargeNode(node, code, language, semanticTypes);
                     if (childChunks.length > 0) {
                         chunks.push(...childChunks);
                         return;
                     }
                     // If no children found, fall through to extract anyway
-                    const chunk = this._createChunk(node, code, language, parentName);
+                    const chunk = this.createChunk(node, code, language, parentName);
                     chunks.push(chunk);
                     return;
                 }
@@ -325,18 +433,25 @@ class SemanticChunker {
         // Recurse into named children
         for (let i = 0; i < node.namedChildCount; i++) {
             const child = node.namedChild(i);
-            const newParent = this._getNodeName(node) || parentName;
-            this._extractChunks(child, code, language, semanticTypes, chunks, newParent);
+            if (child) {
+                const newParent = this.getNodeName(node) ?? parentName;
+                this.extractChunks(child, code, language, semanticTypes, chunks, newParent);
+            }
         }
     }
 
     /**
      * Create a SemanticChunk from an AST node
      */
-    _createChunk(node, code, language, parentName) {
-        const name = this._getNodeName(node);
-        const type = this._getChunkType(node.type);
-        const metadata = this._extractMetadata(node, language);
+    private createChunk(
+        node: Node,
+        code: string,
+        language: string,
+        parentName: string | null
+    ): SemanticChunk {
+        const name = this.getNodeName(node);
+        const type = this.getChunkType(node.type);
+        const metadata = this.extractMetadata(node, language);
 
         if (parentName) {
             metadata.parent = parentName;
@@ -344,21 +459,21 @@ class SemanticChunker {
 
         return new SemanticChunk({
             text: node.text,
-            type: type,
-            name: name,
+            type,
+            name,
             lineStart: node.startPosition.row + 1,
             lineEnd: node.endPosition.row + 1,
-            language: language,
-            metadata: metadata,
+            language,
+            metadata,
         });
     }
 
     /**
      * Extract the name from a node (function name, class name, etc.)
      */
-    _getNodeName(node) {
+    private getNodeName(node: Node): string | null {
         // Try common field names
-        const nameNode = node.childForFieldName('name') ||
+        const nameNode = node.childForFieldName('name') ??
                          node.childForFieldName('identifier');
 
         if (nameNode) {
@@ -367,14 +482,14 @@ class SemanticChunker {
 
         // For arrow functions assigned to variables
         if (node.type === 'arrow_function' && node.parent?.type === 'variable_declarator') {
-            return node.parent.childForFieldName('name')?.text;
+            return node.parent.childForFieldName('name')?.text ?? null;
         }
 
         // For exported declarations
         if (node.type === 'export_statement') {
             const declaration = node.childForFieldName('declaration');
             if (declaration) {
-                return this._getNodeName(declaration);
+                return this.getNodeName(declaration);
             }
         }
 
@@ -384,8 +499,8 @@ class SemanticChunker {
     /**
      * Map AST node type to chunk type
      */
-    _getChunkType(nodeType) {
-        const typeMap = {
+    private getChunkType(nodeType: string): ChunkType {
+        const typeMap: Record<string, ChunkType> = {
             'function_declaration': 'function',
             'function_definition': 'function',
             'generator_function_declaration': 'function',
@@ -402,14 +517,14 @@ class SemanticChunker {
             'trait_item': 'trait',
             'decorated_definition': 'function',
         };
-        return typeMap[nodeType] || 'block';
+        return typeMap[nodeType] ?? 'block';
     }
 
     /**
      * Extract metadata from a node (parameters, return type, etc.)
      */
-    _extractMetadata(node, language) {
-        const metadata = {};
+    private extractMetadata(node: Node, _language: string): ChunkMetadata {
+        const metadata: ChunkMetadata = {};
 
         // Extract parameters
         const params = node.childForFieldName('parameters');
@@ -417,7 +532,9 @@ class SemanticChunker {
             metadata.parameters = [];
             for (let i = 0; i < params.namedChildCount; i++) {
                 const param = params.namedChild(i);
-                metadata.parameters.push(param.text);
+                if (param) {
+                    metadata.parameters.push(param.text);
+                }
             }
         }
 
@@ -443,14 +560,19 @@ class SemanticChunker {
     /**
      * Split a large node by extracting its children
      */
-    _splitLargeNode(node, code, language, semanticTypes) {
-        const chunks = [];
+    private splitLargeNode(
+        node: Node,
+        code: string,
+        language: string,
+        semanticTypes: string[]
+    ): SemanticChunk[] {
+        const chunks: SemanticChunk[] = [];
 
         for (let i = 0; i < node.namedChildCount; i++) {
             const child = node.namedChild(i);
-            if (semanticTypes.includes(child.type) && child.text.length >= this.config.minChunkSize) {
-                const parentName = this._getNodeName(node);
-                const chunk = this._createChunk(child, code, language, parentName);
+            if (child && semanticTypes.includes(child.type) && child.text.length >= this.config.minChunkSize) {
+                const parentName = this.getNodeName(node);
+                const chunk = this.createChunk(child, code, language, parentName);
                 chunks.push(chunk);
             }
         }
@@ -461,16 +583,16 @@ class SemanticChunker {
     /**
      * Fill gaps between semantic chunks with block chunks
      */
-    _fillGaps(chunks, code, language) {
+    private fillGaps(chunks: SemanticChunk[], code: string, language: string): SemanticChunk[] {
         if (chunks.length === 0) {
-            return this._fallbackChunk(code, language);
+            return this.fallbackChunk(code, language);
         }
 
         // Sort chunks by line number
         chunks.sort((a, b) => a.lineStart - b.lineStart);
 
         const lines = code.split('\n');
-        const result = [];
+        const result: SemanticChunk[] = [];
         let currentLine = 1;
 
         for (const chunk of chunks) {
@@ -485,7 +607,7 @@ class SemanticChunker {
                         name: null,
                         lineStart: currentLine,
                         lineEnd: chunk.lineStart - 1,
-                        language: language,
+                        language,
                         metadata: { gapFill: true },
                     }));
                 }
@@ -506,7 +628,7 @@ class SemanticChunker {
                     name: null,
                     lineStart: currentLine,
                     lineEnd: lines.length,
-                    language: language,
+                    language,
                     metadata: { gapFill: true },
                 }));
             }
@@ -518,8 +640,8 @@ class SemanticChunker {
     /**
      * Fallback to line-based chunking when AST parsing fails
      */
-    _fallbackChunk(code, language) {
-        const chunks = [];
+    private fallbackChunk(code: string, language: string): SemanticChunk[] {
+        const chunks: SemanticChunk[] = [];
         const lines = code.split('\n');
         const { fallbackLineSize, fallbackOverlap, minChunkSize } = this.config;
 
@@ -531,12 +653,12 @@ class SemanticChunker {
 
             if (text.length >= minChunkSize) {
                 chunks.push(new SemanticChunk({
-                    text: text,
+                    text,
                     type: 'block',
                     name: null,
-                    lineStart: lineStart,
-                    lineEnd: lineEnd,
-                    language: language,
+                    lineStart,
+                    lineEnd,
+                    language,
                     metadata: { fallback: true },
                 }));
             }
@@ -545,21 +667,18 @@ class SemanticChunker {
         return chunks;
     }
 }
-
-module.exports = { SemanticChunker, DEFAULT_CONFIG };
 ```
 
 ## Part 3: Using the Chunker
 
 ### Basic Usage Example
 
-Create `src/example.js`:
+Create `src/example.ts`:
 
-```javascript
-const { SemanticChunker } = require('./chunker');
-const path = require('path');
+```typescript
+import { SemanticChunker } from './chunker';
 
-async function main() {
+async function main(): Promise<void> {
     // Initialize chunker with language grammars
     const chunker = new SemanticChunker({
         maxChunkSize: 4000,
@@ -713,13 +832,15 @@ main().catch(console.error);
 
 For better embeddings, prepend context to each chunk:
 
-```javascript
+```typescript
+import { SemanticChunk } from './chunk';
+
 /**
  * Generate contextualized text for embedding
  * Includes file path, scope chain, and metadata
  */
-function contextualizeChunk(chunk, filePath) {
-    const lines = [];
+function contextualizeChunk(chunk: SemanticChunk, filePath: string): string {
+    const lines: string[] = [];
 
     // File context
     lines.push(`File: ${filePath}`);
@@ -735,7 +856,7 @@ function contextualizeChunk(chunk, filePath) {
     }
 
     // Parameters (for functions)
-    if (chunk.metadata.parameters?.length > 0) {
+    if (chunk.metadata.parameters && chunk.metadata.parameters.length > 0) {
         lines.push(`Parameters: ${chunk.metadata.parameters.join(', ')}`);
     }
 
@@ -754,11 +875,11 @@ function contextualizeChunk(chunk, filePath) {
 }
 
 // Example usage:
-const contextualizedText = contextualizeChunk(chunk, 'src/services/user.js');
+// const contextualizedText = contextualizeChunk(chunk, 'src/services/user.ts');
 
 /*
 Output:
-File: src/services/user.js
+File: src/services/user.ts
 Parent: UserService
 method: create
 Parameters: userData
@@ -775,22 +896,38 @@ async create(userData) {
 
 For classes with methods, extract methods as separate chunks:
 
-```javascript
+```typescript
+import { Parser, Language, Node } from 'web-tree-sitter';
+import { SemanticChunk } from './chunk';
+
 /**
  * Extract methods from a class as separate chunks
  */
-function extractMethodsFromClass(classChunk, code, language) {
-    const chunks = [];
+function extractMethodsFromClass(
+    classChunk: SemanticChunk,
+    languages: Map<string, Language>,
+    parser: Parser
+): SemanticChunk[] {
+    const chunks: SemanticChunk[] = [];
+    const language = classChunk.language;
+    const langGrammar = languages.get(language);
+
+    if (!langGrammar) {
+        return chunks;
+    }
 
     // Parse the class body
-    const parser = new Parser();
-    parser.setLanguage(languages[language]);
+    parser.setLanguage(langGrammar);
     const tree = parser.parse(classChunk.text);
 
+    if (!tree) {
+        return chunks;
+    }
+
     // Find method definitions
-    function findMethods(node) {
+    function findMethods(node: Node): void {
         if (node.type === 'method_definition') {
-            const name = node.childForFieldName('name')?.text;
+            const name = node.childForFieldName('name')?.text ?? null;
             chunks.push(new SemanticChunk({
                 text: node.text,
                 type: 'method',
@@ -799,13 +936,15 @@ function extractMethodsFromClass(classChunk, code, language) {
                 lineEnd: classChunk.lineStart + node.endPosition.row,
                 language: language,
                 metadata: {
-                    parent: classChunk.name,
-                    className: classChunk.name,
+                    parent: classChunk.name ?? undefined,
                 },
             }));
         }
         for (let i = 0; i < node.namedChildCount; i++) {
-            findMethods(node.namedChild(i));
+            const child = node.namedChild(i);
+            if (child) {
+                findMethods(child);
+            }
         }
     }
 
@@ -818,11 +957,21 @@ function extractMethodsFromClass(classChunk, code, language) {
 
 Add overlapping context to help with queries that span chunk boundaries:
 
-```javascript
+```typescript
+import { SemanticChunk } from './chunk';
+
+interface ChunkWithOverlap extends SemanticChunk {
+    textWithOverlap: string;
+}
+
 /**
  * Add overlap to chunks
  */
-function addOverlap(chunks, code, overlapLines = 5) {
+function addOverlap(
+    chunks: SemanticChunk[],
+    code: string,
+    overlapLines: number = 5
+): ChunkWithOverlap[] {
     const lines = code.split('\n');
 
     return chunks.map((chunk, i) => {
@@ -849,7 +998,7 @@ function addOverlap(chunks, code, overlapLines = 5) {
                 ...chunk.metadata,
                 hasOverlap: true,
             },
-        };
+        } as ChunkWithOverlap;
     });
 }
 ```
@@ -858,72 +1007,111 @@ function addOverlap(chunks, code, overlapLines = 5) {
 
 ## Part 5: Complete Working Example
 
-Create `src/complete-example.js`:
+Create `src/complete-example.ts`:
 
-```javascript
-const TreeSitter = require('web-tree-sitter');
-const Parser = TreeSitter.Parser;
+```typescript
+import { Parser, Language, Node } from 'web-tree-sitter';
+
+interface ChunkResult {
+    text: string;
+    type: string;
+    name: string | null;
+    lineStart: number;
+    lineEnd: number;
+    charCount: number;
+    language: string;
+    filePath: string;
+    metadata?: Record<string, unknown>;
+    contextualizedText?: string;
+}
+
+interface ProductionChunkerConfig {
+    maxChunkSize?: number;
+    minChunkSize?: number;
+    includeMetadata?: boolean;
+    contextualizeText?: boolean;
+}
+
+interface TraversalContext {
+    parent?: string;
+}
 
 /**
  * Production-ready Semantic Code Chunker
  */
 class ProductionChunker {
-    constructor(config = {}) {
+    private config: Required<ProductionChunkerConfig>;
+    private parser: Parser | null = null;
+    private languages: Map<string, Language> = new Map();
+
+    constructor(config: ProductionChunkerConfig = {}) {
         this.config = {
-            maxChunkSize: config.maxChunkSize || 8000,
-            minChunkSize: config.minChunkSize || 100,
+            maxChunkSize: config.maxChunkSize ?? 8000,
+            minChunkSize: config.minChunkSize ?? 100,
             includeMetadata: config.includeMetadata !== false,
-            contextualizeText: config.contextualizeText || false,
+            contextualizeText: config.contextualizeText ?? false,
         };
-        this.parser = null;
-        this.languages = new Map();
     }
 
-    async init() {
+    async init(): Promise<void> {
         await Parser.init();
         this.parser = new Parser();
     }
 
-    async loadLanguage(name, wasmPath) {
-        const lang = await TreeSitter.Language.load(wasmPath);
+    async loadLanguage(name: string, wasmPath: string): Promise<void> {
+        const lang = await Language.load(wasmPath);
         this.languages.set(name, lang);
     }
 
-    chunk(code, language, filePath = 'unknown') {
+    chunk(code: string, language: string, filePath: string = 'unknown'): ChunkResult[] {
         const langGrammar = this.languages.get(language);
-        if (!langGrammar) {
-            return this._fallbackChunk(code, language, filePath);
+        if (!langGrammar || !this.parser) {
+            return this.fallbackChunk(code, language, filePath);
         }
 
         this.parser.setLanguage(langGrammar);
         const tree = this.parser.parse(code);
-        const chunks = [];
 
-        this._traverse(tree.rootNode, code, language, filePath, chunks);
+        if (!tree) {
+            return this.fallbackChunk(code, language, filePath);
+        }
+
+        const chunks: ChunkResult[] = [];
+        this.traverse(tree.rootNode, code, language, filePath, chunks);
 
         // Sort and fill gaps
-        return this._fillGaps(chunks, code, language, filePath);
+        return this.fillGaps(chunks, code, language, filePath);
     }
 
-    _traverse(node, code, language, filePath, chunks, context = {}) {
-        const semanticTypes = this._getSemanticTypes(language);
+    private traverse(
+        node: Node,
+        code: string,
+        language: string,
+        filePath: string,
+        chunks: ChunkResult[],
+        context: TraversalContext = {}
+    ): void {
+        const semanticTypes = this.getSemanticTypes(language);
 
         if (semanticTypes.includes(node.type)) {
             const size = node.text.length;
 
             if (size >= this.config.minChunkSize && size <= this.config.maxChunkSize) {
-                chunks.push(this._createChunk(node, language, filePath, context));
+                chunks.push(this.createChunk(node, language, filePath, context));
                 return; // Don't recurse
             }
 
             if (size > this.config.maxChunkSize) {
                 // Recurse into children with updated context
-                const newContext = {
+                const newContext: TraversalContext = {
                     ...context,
-                    parent: this._getName(node) || context.parent,
+                    parent: this.getName(node) ?? context.parent,
                 };
                 for (let i = 0; i < node.namedChildCount; i++) {
-                    this._traverse(node.namedChild(i), code, language, filePath, chunks, newContext);
+                    const child = node.namedChild(i);
+                    if (child) {
+                        this.traverse(child, code, language, filePath, chunks, newContext);
+                    }
                 }
                 return;
             }
@@ -931,15 +1119,23 @@ class ProductionChunker {
 
         // Recurse into children
         for (let i = 0; i < node.namedChildCount; i++) {
-            this._traverse(node.namedChild(i), code, language, filePath, chunks, context);
+            const child = node.namedChild(i);
+            if (child) {
+                this.traverse(child, code, language, filePath, chunks, context);
+            }
         }
     }
 
-    _createChunk(node, language, filePath, context) {
-        const name = this._getName(node);
-        const type = this._getType(node.type);
+    private createChunk(
+        node: Node,
+        language: string,
+        filePath: string,
+        context: TraversalContext
+    ): ChunkResult {
+        const name = this.getName(node);
+        const type = this.getType(node.type);
 
-        const chunk = {
+        const chunk: ChunkResult = {
             text: node.text,
             type: type,
             name: name,
@@ -951,26 +1147,26 @@ class ProductionChunker {
         };
 
         if (this.config.includeMetadata) {
-            chunk.metadata = this._extractMetadata(node, context);
+            chunk.metadata = this.extractMetadata(node, context);
         }
 
         if (this.config.contextualizeText) {
-            chunk.contextualizedText = this._contextualize(chunk);
+            chunk.contextualizedText = this.contextualize(chunk);
         }
 
         return chunk;
     }
 
-    _getName(node) {
-        return node.childForFieldName('name')?.text ||
-               node.childForFieldName('identifier')?.text ||
+    private getName(node: Node): string | null {
+        return node.childForFieldName('name')?.text ??
+               node.childForFieldName('identifier')?.text ??
                (node.type === 'arrow_function' && node.parent?.type === 'variable_declarator'
-                   ? node.parent.childForFieldName('name')?.text
+                   ? node.parent.childForFieldName('name')?.text ?? null
                    : null);
     }
 
-    _getType(nodeType) {
-        const map = {
+    private getType(nodeType: string): string {
+        const map: Record<string, string> = {
             'function_declaration': 'function',
             'function_definition': 'function',
             'arrow_function': 'function',
@@ -979,20 +1175,20 @@ class ProductionChunker {
             'class_definition': 'class',
             'interface_declaration': 'interface',
         };
-        return map[nodeType] || 'block';
+        return map[nodeType] ?? 'block';
     }
 
-    _getSemanticTypes(language) {
-        const types = {
+    private getSemanticTypes(language: string): string[] {
+        const types: Record<string, string[]> = {
             javascript: ['function_declaration', 'class_declaration', 'method_definition', 'arrow_function'],
             typescript: ['function_declaration', 'class_declaration', 'method_definition', 'arrow_function', 'interface_declaration'],
             python: ['function_definition', 'class_definition'],
         };
-        return types[language] || [];
+        return types[language] ?? [];
     }
 
-    _extractMetadata(node, context) {
-        const meta = {};
+    private extractMetadata(node: Node, context: TraversalContext): Record<string, unknown> {
+        const meta: Record<string, unknown> = {};
 
         if (context.parent) {
             meta.parent = context.parent;
@@ -1000,10 +1196,14 @@ class ProductionChunker {
 
         const params = node.childForFieldName('parameters');
         if (params) {
-            meta.parameters = [];
+            const parameters: string[] = [];
             for (let i = 0; i < params.namedChildCount; i++) {
-                meta.parameters.push(params.namedChild(i).text);
+                const param = params.namedChild(i);
+                if (param) {
+                    parameters.push(param.text);
+                }
             }
+            meta.parameters = parameters;
         }
 
         if (node.text.trimStart().startsWith('async')) {
@@ -1013,8 +1213,8 @@ class ProductionChunker {
         return meta;
     }
 
-    _contextualize(chunk) {
-        const lines = [`// File: ${chunk.filePath}`];
+    private contextualize(chunk: ChunkResult): string {
+        const lines: string[] = [`// File: ${chunk.filePath}`];
 
         if (chunk.metadata?.parent) {
             lines.push(`// Parent: ${chunk.metadata.parent}`);
@@ -1030,14 +1230,19 @@ class ProductionChunker {
         return lines.join('\n');
     }
 
-    _fillGaps(chunks, code, language, filePath) {
+    private fillGaps(
+        chunks: ChunkResult[],
+        code: string,
+        language: string,
+        filePath: string
+    ): ChunkResult[] {
         if (chunks.length === 0) {
-            return this._fallbackChunk(code, language, filePath);
+            return this.fallbackChunk(code, language, filePath);
         }
 
         chunks.sort((a, b) => a.lineStart - b.lineStart);
         const lines = code.split('\n');
-        const result = [];
+        const result: ChunkResult[] = [];
         let current = 1;
 
         for (const chunk of chunks) {
@@ -1082,9 +1287,9 @@ class ProductionChunker {
         return result;
     }
 
-    _fallbackChunk(code, language, filePath) {
+    private fallbackChunk(code: string, language: string, filePath: string): ChunkResult[] {
         const lines = code.split('\n');
-        const chunks = [];
+        const chunks: ChunkResult[] = [];
         const size = 50;
         const overlap = 10;
 
@@ -1116,7 +1321,7 @@ class ProductionChunker {
 // Demo
 // ============================================
 
-async function demo() {
+async function demo(): Promise<void> {
     const chunker = new ProductionChunker({
         maxChunkSize: 4000,
         minChunkSize: 50,
@@ -1164,12 +1369,12 @@ export { ShoppingCart, formatCurrency };
     `.trim();
 
     console.log('=== Semantic Chunking Demo ===\n');
-    const chunks = chunker.chunk(code, 'javascript', 'src/cart.js');
+    const chunks = chunker.chunk(code, 'javascript', 'src/cart.ts');
 
     chunks.forEach((chunk, i) => {
         console.log(`\n========== Chunk ${i + 1} ==========`);
         console.log(`Type: ${chunk.type}`);
-        console.log(`Name: ${chunk.name || '(anonymous)'}`);
+        console.log(`Name: ${chunk.name ?? '(anonymous)'}`);
         console.log(`Lines: ${chunk.lineStart}-${chunk.lineEnd}`);
         console.log(`Size: ${chunk.charCount} chars`);
         console.log(`Metadata:`, JSON.stringify(chunk.metadata, null, 2));

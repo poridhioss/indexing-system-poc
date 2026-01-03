@@ -1,7 +1,6 @@
-const { SemanticChunker } = require('./chunker');
-const path = require('path');
+import { SemanticChunker } from './chunker';
 
-async function main() {
+async function main(): Promise<void> {
     // Initialize chunker with language grammars
     const chunker = new SemanticChunker({
         maxChunkSize: 4000,
@@ -74,7 +73,7 @@ export { getUser, UserService, validateEmail };
     jsChunks.forEach((chunk, i) => {
         console.log(`--- Chunk ${i + 1} ---`);
         console.log(`Type: ${chunk.type}`);
-        console.log(`Name: ${chunk.name || '(none)'}`);
+        console.log(`Name: ${chunk.name ?? '(none)'}`);
         console.log(`Lines: ${chunk.lineStart}-${chunk.lineEnd} (${chunk.lineCount} lines)`);
         console.log(`Size: ${chunk.charCount} characters`);
         if (Object.keys(chunk.metadata).length > 0) {
@@ -133,7 +132,7 @@ class Authenticator:
     pyChunks.forEach((chunk, i) => {
         console.log(`--- Chunk ${i + 1} ---`);
         console.log(`Type: ${chunk.type}`);
-        console.log(`Name: ${chunk.name || '(none)'}`);
+        console.log(`Name: ${chunk.name ?? '(none)'}`);
         console.log(`Lines: ${chunk.lineStart}-${chunk.lineEnd}`);
         console.log(`Size: ${chunk.charCount} characters`);
         console.log(`Preview: ${chunk.text.split('\n')[0].substring(0, 60)}...`);

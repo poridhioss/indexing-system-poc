@@ -50,8 +50,8 @@ By the end of this series, you'll have implemented:
 | **Lab 02** | Deploy FIM Backend on AWS Lambda | Done | Build serverless FIM backend using AWS Lambda + API Gateway |
 | **Lab 03** | Deploy FIM Backend on Cloudflare Workers | Done | Build edge FIM backend using Cloudflare Workers + Hono.js |
 | **Lab 04** | AST-Based Semantic Code Chunking | Done | Use Tree-sitter to parse code into AST and create semantic chunks |
-| **Lab 05** | Chunk Hashing Strategies | Pending | Implement content-based hashing for chunks (SHA-256, xxHash) |
-| **Lab 06** | File Watcher Implementation | Pending | Build file system watcher to detect code changes in real-time |
+| **Lab 05** | File Watcher Implementation | Done | Build file system watcher to detect code changes in real-time |
+| **Lab 06** | Chunk Hashing Strategies | Done | Implement content-based hashing for chunks (SHA-256) with dirty queue |
 | **Lab 07** | Basic Merkle Tree Implementation | Pending | Build file-level Merkle tree for efficient change detection |
 | **Lab 08** | Client-Server Merkle Tree Sync | Pending | Implement dual Merkle trees (client + server) with sync protocol |
 | **Lab 09** | Change Detection & Selective Re-indexing | Pending | Detect changed files and selectively re-embed only affected chunks |
@@ -97,7 +97,7 @@ Learning Tree-sitter for AST parsing and semantic code chunking.
 ### Phase 3: Change Detection
 **File Watcher, Chunk Hashing, Merkle Tree, Client-Server Sync**
 
-Building the Merkle tree system for efficient incremental updates.
+Building the file watching, hashing, and Merkle tree system for efficient incremental updates.
 
 ### Phase 4: Storage & Integration
 **Embedding Database, Full Pipeline**
