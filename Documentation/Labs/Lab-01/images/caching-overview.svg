@@ -1,0 +1,115 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 280">
+  <defs>
+    <linearGradient id="bgGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#fafbfc;stop-opacity:1" />
+      <stop offset="100%" style="stop-color:#f0f4f8;stop-opacity:1" />
+    </linearGradient>
+  </defs>
+
+  <!-- Background -->
+  <rect width="1000" height="280" fill="url(#bgGrad)" rx="12"/>
+
+  <!-- Main Container -->
+  <g transform="translate(20, 20)">
+    <rect width="960" height="240" rx="10" fill="#ffffff" stroke="#e2e8f0" stroke-width="1.5"/>
+
+    <!-- Without Caching Section -->
+    <g transform="translate(30, 25)">
+      <text x="0" y="20" font-family="Inter, system-ui, sans-serif" font-size="16" font-weight="600" fill="#dc2626">Without Caching</text>
+
+      <g transform="translate(0, 40)">
+        <rect width="220" height="32" rx="6" fill="#fef2f2"/>
+        <text x="15" y="21" font-family="monospace" font-size="13" fill="#475569">User types "def"</text>
+      </g>
+      <g transform="translate(235, 40)">
+        <line x1="0" y1="16" x2="40" y2="16" stroke="#f87171" stroke-width="2"/>
+        <polygon points="40,16 32,10 32,22" fill="#f87171"/>
+      </g>
+      <g transform="translate(285, 40)">
+        <rect width="120" height="32" rx="6" fill="#fee2e2"/>
+        <text x="60" y="21" font-family="Inter, system-ui, sans-serif" font-size="13" fill="#dc2626" text-anchor="middle">API ~400ms</text>
+      </g>
+
+      <g transform="translate(0, 82)">
+        <rect width="220" height="32" rx="6" fill="#fef2f2"/>
+        <text x="15" y="21" font-family="monospace" font-size="13" fill="#475569">User types "def "</text>
+      </g>
+      <g transform="translate(235, 82)">
+        <line x1="0" y1="16" x2="40" y2="16" stroke="#f87171" stroke-width="2"/>
+        <polygon points="40,16 32,10 32,22" fill="#f87171"/>
+      </g>
+      <g transform="translate(285, 82)">
+        <rect width="120" height="32" rx="6" fill="#fee2e2"/>
+        <text x="60" y="21" font-family="Inter, system-ui, sans-serif" font-size="13" fill="#dc2626" text-anchor="middle">API ~400ms</text>
+      </g>
+
+      <g transform="translate(0, 124)">
+        <rect width="220" height="32" rx="6" fill="#fef2f2"/>
+        <text x="15" y="21" font-family="monospace" font-size="13" fill="#475569">User types "def add"</text>
+      </g>
+      <g transform="translate(235, 124)">
+        <line x1="0" y1="16" x2="40" y2="16" stroke="#f87171" stroke-width="2"/>
+        <polygon points="40,16 32,10 32,22" fill="#f87171"/>
+      </g>
+      <g transform="translate(285, 124)">
+        <rect width="120" height="32" rx="6" fill="#fee2e2"/>
+        <text x="60" y="21" font-family="Inter, system-ui, sans-serif" font-size="13" fill="#dc2626" text-anchor="middle">API ~400ms</text>
+      </g>
+
+      <text x="200" y="190" font-family="Inter, system-ui, sans-serif" font-size="14" fill="#dc2626" font-weight="600" text-anchor="middle">Total: ~1200ms delay</text>
+    </g>
+
+    <!-- Divider -->
+    <line x1="480" y1="20" x2="480" y2="220" stroke="#e2e8f0" stroke-width="1.5"/>
+
+    <!-- With Caching Section -->
+    <g transform="translate(510, 25)">
+      <text x="0" y="20" font-family="Inter, system-ui, sans-serif" font-size="16" font-weight="600" fill="#16a34a">With Radix + Speculative Cache</text>
+
+      <g transform="translate(0, 40)">
+        <rect width="220" height="32" rx="6" fill="#f0fdf4"/>
+        <text x="15" y="21" font-family="monospace" font-size="13" fill="#475569">User types "def"</text>
+      </g>
+      <g transform="translate(235, 40)">
+        <line x1="0" y1="16" x2="40" y2="16" stroke="#86efac" stroke-width="2"/>
+        <polygon points="40,16 32,10 32,22" fill="#86efac"/>
+      </g>
+      <g transform="translate(285, 40)">
+        <rect width="70" height="32" rx="6" fill="#fef3c7"/>
+        <text x="35" y="21" font-family="Inter, system-ui, sans-serif" font-size="13" fill="#92400e" text-anchor="middle">API</text>
+      </g>
+      <g transform="translate(365, 40)">
+        <rect width="80" height="32" rx="6" fill="#dbeafe"/>
+        <text x="40" y="21" font-family="Inter, system-ui, sans-serif" font-size="13" fill="#1d4ed8" text-anchor="middle">Cache</text>
+      </g>
+
+      <g transform="translate(0, 82)">
+        <rect width="220" height="32" rx="6" fill="#f0fdf4"/>
+        <text x="15" y="21" font-family="monospace" font-size="13" fill="#475569">User types "def "</text>
+      </g>
+      <g transform="translate(235, 82)">
+        <line x1="0" y1="16" x2="40" y2="16" stroke="#86efac" stroke-width="2"/>
+        <polygon points="40,16 32,10 32,22" fill="#86efac"/>
+      </g>
+      <g transform="translate(285, 82)">
+        <rect width="160" height="32" rx="6" fill="#dcfce7"/>
+        <text x="80" y="21" font-family="Inter, system-ui, sans-serif" font-size="13" fill="#16a34a" text-anchor="middle">Cache Hit &lt;1ms</text>
+      </g>
+
+      <g transform="translate(0, 124)">
+        <rect width="220" height="32" rx="6" fill="#f0fdf4"/>
+        <text x="15" y="21" font-family="monospace" font-size="13" fill="#475569">User types "def add"</text>
+      </g>
+      <g transform="translate(235, 124)">
+        <line x1="0" y1="16" x2="40" y2="16" stroke="#86efac" stroke-width="2"/>
+        <polygon points="40,16 32,10 32,22" fill="#86efac"/>
+      </g>
+      <g transform="translate(285, 124)">
+        <rect width="160" height="32" rx="6" fill="#dcfce7"/>
+        <text x="80" y="21" font-family="Inter, system-ui, sans-serif" font-size="13" fill="#16a34a" text-anchor="middle">Cache Hit &lt;1ms</text>
+      </g>
+
+      <text x="220" y="190" font-family="Inter, system-ui, sans-serif" font-size="14" fill="#16a34a" font-weight="600" text-anchor="middle">Instant response while typing!</text>
+    </g>
+  </g>
+</svg>

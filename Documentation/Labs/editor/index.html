@@ -1,0 +1,29 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Puku Labs Editor</title>
+  <link rel="stylesheet" href="/src/styles.css">
+</head>
+<body>
+  <div id="app">
+    <!-- Sidebar with File Explorer -->
+    <aside class="sidebar" id="sidebar"></aside>
+
+    <!-- Main Editor Area -->
+    <main class="editor-area" id="editor-area">
+      <div class="tab-bar" id="tab-bar"></div>
+      <div class="editor-container" id="editor-container"></div>
+    </main>
+
+    <!-- Bottom Panel for Lab Demos -->
+    <section class="panel-area" id="panel-area"></section>
+
+    <!-- Status Bar -->
+    <footer class="status-bar" id="status-bar"></footer>
+  </div>
+
+  <script type="module" src="/src/main.ts"></script>
+</body>
+</html>

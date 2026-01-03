@@ -1,0 +1,14 @@
+name = "cloudflare-backend"
+main = "src/index.ts"
+compatibility_date = "2024-11-24"
+
+# Enable Workers.dev subdomain (for testing)
+workers_dev = true
+
+# Environment variables (non-secret)
+[vars]
+CODESTRAL_FIM_URL = "https://codestral.mistral.ai/v1/fim/completions"
+FIM_MODEL = "codestral-latest"
+
+# Secrets (set via wrangler secret put)
+# CODESTRAL_API_KEY - Your Mistral Codestral API key

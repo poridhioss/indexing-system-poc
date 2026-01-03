@@ -1,0 +1,97 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 800 320">
+  <defs>
+    <linearGradient id="bgGrad3" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#fafbfc;stop-opacity:1" />
+      <stop offset="100%" style="stop-color:#f0f4f8;stop-opacity:1" />
+    </linearGradient>
+  </defs>
+
+  <!-- Background -->
+  <rect width="800" height="320" fill="url(#bgGrad3)" rx="12"/>
+
+  <!-- Title -->
+  <text x="400" y="30" font-family="Inter, system-ui, sans-serif" font-size="16" font-weight="600" fill="#1a202c" text-anchor="middle">How LLMs Process Code</text>
+
+  <!-- Input -->
+  <g transform="translate(30, 55)">
+    <rect width="140" height="50" rx="8" fill="#f1f5f9" stroke="#cbd5e1" stroke-width="1.5"/>
+    <text x="70" y="22" font-family="Inter, system-ui, sans-serif" font-size="11" fill="#64748b" text-anchor="middle">Input</text>
+    <text x="70" y="38" font-family="monospace" font-size="12" fill="#334155" text-anchor="middle">def add(a, b):</text>
+  </g>
+
+  <!-- Arrow 1 -->
+  <g transform="translate(180, 75)">
+    <line x1="0" y1="0" x2="30" y2="0" stroke="#94a3b8" stroke-width="2"/>
+    <polygon points="30,0 24,-4 24,4" fill="#94a3b8"/>
+  </g>
+
+  <!-- Step 1: Tokenization -->
+  <g transform="translate(220, 50)">
+    <rect width="130" height="60" rx="8" fill="#fef3c7" stroke="#f59e0b" stroke-width="1.5"/>
+    <text x="65" y="20" font-family="Inter, system-ui, sans-serif" font-size="10" font-weight="600" fill="#92400e" text-anchor="middle">1. TOKENIZATION</text>
+    <text x="65" y="38" font-family="monospace" font-size="9" fill="#78350f" text-anchor="middle">["def", "add",</text>
+    <text x="65" y="50" font-family="monospace" font-size="9" fill="#78350f" text-anchor="middle">"(", "a", "b", ")"]</text>
+  </g>
+
+  <!-- Arrow 2 -->
+  <g transform="translate(360, 75)">
+    <line x1="0" y1="0" x2="30" y2="0" stroke="#94a3b8" stroke-width="2"/>
+    <polygon points="30,0 24,-4 24,4" fill="#94a3b8"/>
+  </g>
+
+  <!-- Step 2: Embedding -->
+  <g transform="translate(400, 50)">
+    <rect width="130" height="60" rx="8" fill="#dbeafe" stroke="#3b82f6" stroke-width="1.5"/>
+    <text x="65" y="20" font-family="Inter, system-ui, sans-serif" font-size="10" font-weight="600" fill="#1e40af" text-anchor="middle">2. EMBEDDING</text>
+    <text x="65" y="38" font-family="Inter, system-ui, sans-serif" font-size="9" fill="#1e3a8a" text-anchor="middle">Token → Vector</text>
+    <text x="65" y="50" font-family="monospace" font-size="8" fill="#1e3a8a" text-anchor="middle">[0.2, -0.5, 0.8...]</text>
+  </g>
+
+  <!-- Arrow 3 -->
+  <g transform="translate(540, 75)">
+    <line x1="0" y1="0" x2="30" y2="0" stroke="#94a3b8" stroke-width="2"/>
+    <polygon points="30,0 24,-4 24,4" fill="#94a3b8"/>
+  </g>
+
+  <!-- Step 3: Attention -->
+  <g transform="translate(580, 50)">
+    <rect width="130" height="60" rx="8" fill="#d1fae5" stroke="#10b981" stroke-width="1.5"/>
+    <text x="65" y="20" font-family="Inter, system-ui, sans-serif" font-size="10" font-weight="600" fill="#065f46" text-anchor="middle">3. ATTENTION</text>
+    <text x="65" y="38" font-family="Inter, system-ui, sans-serif" font-size="9" fill="#064e3b" text-anchor="middle">"add" + params</text>
+    <text x="65" y="50" font-family="Inter, system-ui, sans-serif" font-size="9" fill="#064e3b" text-anchor="middle">→ arithmetic op</text>
+  </g>
+
+  <!-- Arrow down from Attention -->
+  <g transform="translate(645, 115)">
+    <line x1="0" y1="0" x2="0" y2="30" stroke="#94a3b8" stroke-width="2"/>
+    <polygon points="0,30 -4,24 4,24" fill="#94a3b8"/>
+  </g>
+
+  <!-- Step 4: Generation -->
+  <g transform="translate(580, 150)">
+    <rect width="130" height="60" rx="8" fill="#ede9fe" stroke="#8b5cf6" stroke-width="1.5"/>
+    <text x="65" y="20" font-family="Inter, system-ui, sans-serif" font-size="10" font-weight="600" fill="#5b21b6" text-anchor="middle">4. GENERATION</text>
+    <text x="65" y="38" font-family="Inter, system-ui, sans-serif" font-size="9" fill="#4c1d95" text-anchor="middle">Predict next tokens</text>
+    <text x="65" y="50" font-family="monospace" font-size="9" fill="#4c1d95" text-anchor="middle">return → a → + → b</text>
+  </g>
+
+  <!-- Arrow to Output -->
+  <g transform="translate(500, 175)">
+    <line x1="70" y1="0" x2="0" y2="0" stroke="#94a3b8" stroke-width="2"/>
+    <polygon points="0,0 6,-4 6,4" fill="#94a3b8"/>
+  </g>
+
+  <!-- Output -->
+  <g transform="translate(350, 150)">
+    <rect width="140" height="60" rx="8" fill="#f0fdf4" stroke="#22c55e" stroke-width="2"/>
+    <text x="70" y="22" font-family="Inter, system-ui, sans-serif" font-size="11" fill="#16a34a" text-anchor="middle">Output</text>
+    <text x="70" y="42" font-family="monospace" font-size="13" font-weight="600" fill="#15803d" text-anchor="middle">return a + b</text>
+  </g>
+
+  <!-- Summary text -->
+  <g transform="translate(30, 240)">
+    <rect width="740" height="60" rx="8" fill="#ffffff" stroke="#e2e8f0" stroke-width="1"/>
+    <text x="370" y="25" font-family="Inter, system-ui, sans-serif" font-size="12" fill="#475569" text-anchor="middle">The model learns patterns from millions of functions. It knows that a function named</text>
+    <text x="370" y="45" font-family="Inter, system-ui, sans-serif" font-size="12" fill="#475569" text-anchor="middle"><tspan font-family="monospace" fill="#334155">add</tspan> with parameters <tspan font-family="monospace" fill="#334155">a</tspan> and <tspan font-family="monospace" fill="#334155">b</tspan> likely returns <tspan font-family="monospace" font-weight="600" fill="#15803d">a + b</tspan>.</text>
+  </g>
+</svg>

@@ -1,0 +1,5 @@
+{
+    "files.autoSave": "afterDelay",
+    "editor.inlineSuggest.enabled": true,
+    "puku.embeddings.token": "33a6a9c77f05e3f8824bf737ca18cf8a7cd680dbad95ee69133495173771c394"
+}
