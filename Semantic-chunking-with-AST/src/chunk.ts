@@ -72,4 +72,41 @@ export class SemanticChunk {
     toString(): string {
         return `[${this.type}] ${this.name ?? '(anonymous)'} (lines ${this.lineStart}-${this.lineEnd}, ${this.charCount} chars)`;
     }
+
+    /**
+     * Generate contextualized text for embedding
+     * Prepends metadata like file path, scope, and type before the actual code
+     */
+    contextualize(filePath: string): string {
+        const lines: string[] = [];
+
+        // File context
+        lines.push(`File: ${filePath}`);
+
+        // Parent scope
+        if (this.metadata.parent) {
+            lines.push(`Parent: ${this.metadata.parent}`);
+        }
+
+        // Type and name
+        if (this.name) {
+            lines.push(`${this.type}: ${this.name}`);
+        }
+
+        // Parameters (for functions/methods)
+        if (this.metadata.parameters && this.metadata.parameters.length > 0) {
+            lines.push(`Parameters: ${this.metadata.parameters.join(', ')}`);
+        }
+
+        // Return type (TypeScript)
+        if (this.metadata.returnType) {
+            lines.push(`Returns: ${this.metadata.returnType}`);
+        }
+
+        // Separator and actual code
+        lines.push('---');
+        lines.push(this.text);
+
+        return lines.join('\n');
+    }
 }

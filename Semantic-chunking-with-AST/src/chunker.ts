@@ -362,4 +362,96 @@ export class SemanticChunker {
 
         return chunks;
     }
+
+    /**
+     * Extract methods from a class chunk as separate chunks
+     * Useful when a class exceeds maxChunkSize
+     */
+    extractMethodsFromClass(classChunk: SemanticChunk): SemanticChunk[] {
+        const chunks: SemanticChunk[] = [];
+        const language = classChunk.language;
+        const langGrammar = this.languages.get(language);
+
+        if (!langGrammar || !this.parser) {
+            return chunks;
+        }
+
+        // Parse the class body
+        this.parser.setLanguage(langGrammar);
+        const tree = this.parser.parse(classChunk.text);
+
+        if (!tree) {
+            return chunks;
+        }
+
+        // Find method definitions
+        const findMethods = (node: Node): void => {
+            if (node.type === 'method_definition') {
+                const name = node.childForFieldName('name')?.text ?? null;
+                chunks.push(new SemanticChunk({
+                    text: node.text,
+                    type: 'method',
+                    name: name,
+                    lineStart: classChunk.lineStart + node.startPosition.row,
+                    lineEnd: classChunk.lineStart + node.endPosition.row,
+                    language: language,
+                    metadata: {
+                        parent: classChunk.name ?? undefined,
+                    },
+                }));
+            }
+            for (let i = 0; i < node.namedChildCount; i++) {
+                const child = node.namedChild(i);
+                if (child) {
+                    findMethods(child);
+                }
+            }
+        };
+
+        findMethods(tree.rootNode);
+        return chunks;
+    }
+
+    /**
+     * Add overlap context to chunks for better boundary queries
+     * Each chunk gets lines from neighboring chunks
+     */
+    addOverlap(chunks: SemanticChunk[], code: string, overlapLines: number = 5): SemanticChunk[] {
+        const lines = code.split('\n');
+
+        return chunks.map((chunk, i) => {
+            // Get context from previous chunk
+            let prefix = '';
+            if (i > 0) {
+                const prevEnd = chunks[i - 1].lineEnd;
+                const contextStart = Math.max(prevEnd - overlapLines, 0);
+                prefix = lines.slice(contextStart, prevEnd).join('\n');
+            }
+
+            // Get context from next chunk
+            let suffix = '';
+            if (i < chunks.length - 1) {
+                const nextStart = chunks[i + 1].lineStart - 1;
+                const contextEnd = Math.min(nextStart + overlapLines, lines.length);
+                suffix = lines.slice(nextStart, contextEnd).join('\n');
+            }
+
+            // Create new chunk with overlap text
+            const textWithOverlap = [prefix, chunk.text, suffix].filter(Boolean).join('\n\n// ---\n\n');
+
+            return new SemanticChunk({
+                text: textWithOverlap,
+                type: chunk.type,
+                name: chunk.name,
+                lineStart: chunk.lineStart,
+                lineEnd: chunk.lineEnd,
+                language: chunk.language,
+                metadata: {
+                    ...chunk.metadata,
+                    hasOverlap: true,
+                    originalCharCount: chunk.charCount,
+                },
+            });
+        });
+    }
 }
