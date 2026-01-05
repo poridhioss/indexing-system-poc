@@ -1,4 +1,4 @@
-# File Watching for Change Detection
+# Real-Time File Monitoring
 
 Before you can detect code changes for incremental re-indexing, you need a way to know when files change. This lab teaches you how to implement a file watcher using OS-level APIs that forms the foundation of the change detection pipeline.
 
@@ -13,10 +13,10 @@ When a user saves a file, the watcher fires an event. This triggers hash computa
 ## What You'll Learn
 
 1. How file watching works at the OS level
-2. Setting up chokidar for cross-platform file watching
+2. Setting up @parcel/watcher for high-performance file watching
 3. Filtering watched files by extension
 4. Computing content hashes on file changes
-5. Handling file add, change, and delete events
+5. Handling file create, update, and delete events
 
 ## Part 1: Why File Watching?
 
@@ -38,65 +38,39 @@ The file watcher monitors a folder containing multiple files and provides instan
 
 ### File Watcher in the Pipeline
 
-![File Watcher in the Pipeline](./images/infra-1.svg)
+![File Watcher in the Pipeline](./images/infra-5.svg)
 
-This diagram shows the complete flow from user action to callback execution. When a user saves a file, the OS fires an fs.watch event that Chokidar captures. The event handler performs a file extension check—if the file is ignored (like images or binaries), it's skipped. For source files, the watcher computes a SHA-256 hash of the file content and fires the appropriate callback (add, change, or delete) with the file path and hash value.
+This diagram shows the complete flow from user action to callback execution. When a user saves a file, the operating system fires a native file system event that @parcel/watcher captures through its native bindings. The event handler performs a file extension check—if the file is ignored (like images or binaries), it's skipped. For source files, the watcher computes a SHA-256 hash of the file content and fires the appropriate callback (create, update, or delete) with the file path and hash value.
 
-### Key Concepts
+## Part 2: Why @parcel/watcher?
 
-| Concept | Description |
-|---------|-------------|
-| **fs.watch** | Node.js built-in file watcher (OS-level, but unreliable) |
-| **chokidar** | Cross-platform wrapper with better reliability |
-| **Debouncing** | Wait for writes to finish before firing event |
-| **Filtering** | Only watch source files (`.js`, `.ts`, `.py`, etc.) |
-| **Ignored paths** | Skip `node_modules`, `.git`, build directories |
+`Parcel Watcher` is a high-performance file watcher library that is used by `VS Code`, `PUKU IDE by Poridhi`, `Cursor`, `Tailwind`, `Nx`, and other popular IDEs and tools. It is a native library that is written in Rust and C++ and is used to watch files and directories for changes.
 
-## Part 2: Chokidar vs fs.watch
+### The Performance Advantage
 
-### Why Not Use fs.watch Directly?
+Node.js provides `fs.watch()` for file watching, but production IDEs need better performance:
 
-Node.js provides `fs.watch()` for file watching, but it has platform-specific issues:
-
-| Issue | fs.watch | chokidar |
-|-------|----------|----------|
-| **macOS rename bug** | Fires duplicate events | Handles correctly |
-| **Recursive watching** | Not on all platforms | Works everywhere |
-| **File vs directory** | Confusing behavior | Consistent API |
-| **Write stability** | No debouncing | Configurable |
-| **Glob patterns** | Not supported | Full support |
+| Feature | fs.watch | @parcel/watcher |
+|---------|----------|-----------------|
+| **Implementation** | JavaScript | Native (Rust + C++) |
+| **Performance** | Moderate | Extremely fast |
+| **CPU Usage** | Higher | Lower |
+| **Large Projects** | Struggles | Handles thousands of files |
+| **Used By** | Basic tools | VS Code, Cursor, Tailwind, Nx |
 
 ### Architecture Overview
 
-```mermaid
-graph TB
-    subgraph "File System Layer"
-        A[macOS FSEvents]
-        B[Linux inotify]
-        C[Windows ReadDirectoryChangesW]
-    end
+![@parcel/watcher Architecture Overview](./images/infra-3.svg)
 
-    subgraph "Chokidar Abstraction"
-        D[Cross-Platform API]
-        E[Event Normalization]
-        F[Debouncing & Filtering]
-    end
+The architecture has three distinct layers working together:
 
-    subgraph "Application Layer"
-        G[File Watcher Class]
-        H[Event Callbacks]
-    end
+**File System Layer**: Each operating system has its own way of detecting file changes. macOS uses FSEvents, Linux uses inotify, and Windows uses ReadDirectoryChangesW. These are fast, native mechanisms built directly into the operating system.
 
-    A --> D
-    B --> D
-    C --> D
-    D --> E
-    E --> F
-    F --> G
-    G --> H
-```
+**Parcel Watcher Layer**: This is where @parcel/watcher shines. It takes the different OS-specific events and normalizes them into a single, consistent API. The Cross-Platform API means you write code once and it works everywhere. Event Batching groups multiple file changes together for efficiency—if you save 10 files at once, it processes them as a batch instead of 10 separate events. The High Performance Engine, written in Rust and C++, handles all this with minimal CPU usage.
 
-Chokidar abstracts OS-level differences (FSEvents on macOS, inotify on Linux, ReadDirectoryChangesW on Windows) into a consistent cross-platform API. It normalizes events, handles debouncing, and provides filtering capabilities that our FileWatcher class consumes.
+**Application Layer**: This is your code. The File Watcher Class (our SimpleFileWatcher) subscribes to events from Parcel Watcher and receives clean, batched notifications. When files change, your Event Callbacks fire with the file path and computed hash, ready for processing.
+
+This layered approach is why @parcel/watcher can handle thousands of files efficiently—the same architecture powering VS Code, Cursor, and other professional development tools.
 
 ## Part 3: Project Setup
 
@@ -123,11 +97,11 @@ File-Watcher/
 
 | Package | Version | Purpose |
 |---------|---------|---------|
-| `chokidar` | ^5.0.0 | Cross-platform file watching |
+| `@parcel/watcher` | ^2.4.1 | High-performance native file watching |
 | `@types/node` | ^20.10.0 | Node.js type definitions |
 | `typescript` | ^5.3.0 | TypeScript compiler |
 
-The project uses TypeScript with ES2020 module system and generates type declarations for better IDE support.
+The project uses TypeScript with ES2020 module system and generates type declarations for better IDE support. @parcel/watcher provides native bindings that compile during installation.
 
 ## Part 4: Implementation
 
@@ -157,7 +131,8 @@ export class SimpleFileWatcher {
     private watchPath: string;
     private ignored: string[];
     private extensions: string[];
-    private watcher: FSWatcher | null = null;
+    private subscription: parcelWatcher.AsyncSubscription | null = null;
+    private trackedFiles = new Set<string>();
 
     constructor(options: FileWatcherOptions = {}) {
         this.watchPath = options.watchPath || '.';
@@ -173,13 +148,11 @@ export class SimpleFileWatcher {
         this.onFileAdded = options.onFileAdded || this._defaultHandler('added');
         this.onFileChanged = options.onFileChanged || this._defaultHandler('changed');
         this.onFileDeleted = options.onFileDeleted || this._defaultHandler('deleted');
-        this.onReady = options.onReady || (() => {});
-        this.onError = options.onError || ((err: Error) => console.error('Watcher error:', err));
     }
 }
 ```
 
-The constructor initializes the watcher with defaults. It sets up ignored patterns to skip non-source directories (node_modules, .git, dist, build) and defines source file extensions (.js, .ts, .py, etc.). Callbacks default to simple logging handlers if not provided.
+The constructor initializes the watcher with defaults. It sets up ignored patterns to skip non-source directories (node_modules, .git, dist, build) and defines source file extensions (.js, .ts, .py, etc.). The `trackedFiles` Set prevents duplicate events, and `subscription` holds the Parcel watcher subscription (a connection handle returned by `parcelWatcher.subscribe()` that receives file system events and can be used to stop watching via `unsubscribe()`).
 
 ### Step 3: Extension Filtering
 
@@ -192,7 +165,30 @@ private _shouldWatch(filePath: string): boolean {
 
 This method performs extension-based filtering. It extracts the file extension, converts it to lowercase for case-insensitive comparison, and checks against the allowed extensions list. This prevents processing of non-source files like images, PDFs, or binaries.
 
-### Step 4: Hash Computation
+### Step 4: Ignore Pattern Matching
+
+```typescript
+private _shouldIgnore(filePath: string): boolean {
+    const relativePath = path.relative(this.watchPath, filePath);
+
+    for (const pattern of this.ignored) {
+        const regexPattern = pattern
+            .replace(/\*\*/g, '.*')
+            .replace(/\*/g, '[^/]*')
+            .replace(/\//g, '[\\\\/]');
+
+        const regex = new RegExp(regexPattern);
+        if (regex.test(relativePath) || regex.test(filePath)) {
+            return true;
+        }
+    }
+    return false;
+}
+```
+
+This method checks if a file should be ignored based on patterns like `**/node_modules/**` or `**/.git/**`. Since @parcel/watcher doesn't understand glob patterns directly, we convert them to regular expressions. For example, `**/node_modules/**` becomes a regex that matches any path containing "node_modules". The method converts the file path to be relative to the watch directory, then tests it against each ignore pattern. If any pattern matches, the file is ignored. This prevents the watcher from processing thousands of dependency files in node_modules or git metadata files.
+
+### Step 5: Hash Computation
 
 ```typescript
 private _hashFile(filePath: string): string | null {
@@ -207,82 +203,110 @@ private _hashFile(filePath: string): string | null {
 
 The hash function computes a SHA-256 digest of the file path concatenated with content. Including the path in the hash ensures that identical files in different locations have unique hashes. If the file cannot be read (permissions, file deleted), it returns null gracefully.
 
-### Step 5: Starting the Watcher
+### Step 6: Initial Scan
+
+```typescript
+private async _initialScan(): Promise<void> {
+    const scanDir = (dir: string) => {
+        try {
+            const entries = fs.readdirSync(dir, { withFileTypes: true });
+
+            for (const entry of entries) {
+                const fullPath = path.join(dir, entry.name);
+
+                if (this._shouldIgnore(fullPath)) {
+                    continue;
+                }
+
+                if (entry.isDirectory()) {
+                    scanDir(fullPath);
+                } else if (entry.isFile() && this._shouldWatch(fullPath)) {
+                    this.trackedFiles.add(fullPath);
+                    const hash = this._hashFile(fullPath);
+                    this.onFileAdded(fullPath, hash);
+                }
+            }
+        } catch (err) {
+            // Ignore directories we can't read
+        }
+    };
+
+    scanDir(this.watchPath);
+}
+```
+
+Unlike some watchers, @parcel/watcher doesn't automatically report existing files during initialization. We perform a manual recursive directory scan to discover all existing source files. Each file is added to `trackedFiles` and triggers the `onFileAdded` callback with its hash. This ensures the initial state is captured.
+
+### Step 7: Starting the Watcher
 
 ```typescript
 async start(): Promise<this> {
-    const chokidar = await import('chokidar');
+    console.log(`Starting file watcher on: ${path.resolve(this.watchPath)}`);
 
-    this.watcher = chokidar.watch(this.watchPath, {
-        ignored: this.ignored,
-        persistent: true,
-        ignoreInitial: false,
-        awaitWriteFinish: {
-            stabilityThreshold: 100,
-            pollInterval: 50,
-        },
-    });
+    // Perform initial scan
+    await this._initialScan();
 
-    this.watcher.on('add', (filePath: string) => {
-        if (this._shouldWatch(filePath)) {
-            const hash = this._hashFile(filePath);
-            this.onFileAdded(filePath, hash);
+    // Start watching for changes
+    this.subscription = await parcelWatcher.subscribe(
+        this.watchPath,
+        (err: Error | null, events: parcelWatcher.Event[]) => {
+            if (err) {
+                this.onError(err);
+                return;
+            }
+
+            for (const event of events) {
+                const filePath = event.path;
+
+                if (this._shouldIgnore(filePath) || !this._shouldWatch(filePath)) {
+                    continue;
+                }
+
+                if (event.type === 'create') {
+                    if (!this.trackedFiles.has(filePath)) {
+                        this.trackedFiles.add(filePath);
+                        const hash = this._hashFile(filePath);
+                        this.onFileAdded(filePath, hash);
+                    }
+                } else if (event.type === 'update') {
+                    const hash = this._hashFile(filePath);
+                    this.onFileChanged(filePath, hash);
+                } else if (event.type === 'delete') {
+                    this.trackedFiles.delete(filePath);
+                    this.onFileDeleted(filePath, null);
+                }
+            }
         }
-    });
+    );
 
-    this.watcher.on('change', (filePath: string) => {
-        if (this._shouldWatch(filePath)) {
-            const hash = this._hashFile(filePath);
-            this.onFileChanged(filePath, hash);
-        }
-    });
-
-    this.watcher.on('unlink', (filePath: string) => {
-        if (this._shouldWatch(filePath)) {
-            this.onFileDeleted(filePath, null);
-        }
-    });
+    console.log('Initial scan complete. Watching for changes...\n');
+    this.onReady();
 
     return this;
 }
 ```
 
-The `start()` method initializes chokidar with configured options. `awaitWriteFinish` ensures events fire only after writes complete (100ms stability threshold). The watcher listens for 'add', 'change', and 'unlink' events, filters by extension, computes hashes, and invokes appropriate callbacks.
+The `start()` method subscribes to file system events using @parcel/watcher's subscription API. Events arrive in batches, and we filter each event by extension and ignore patterns. Event types are `create`, `update`, and `delete`. The `trackedFiles` Set prevents duplicate "create" events for files discovered during the initial scan.
 
-### Step 6: Event Flow
+### Step 8: Event Flow
 
-```mermaid
-sequenceDiagram
-    participant User
-    participant OS
-    participant Chokidar
-    participant Watcher
-    participant Callback
+![Event Flow](./images/infra-6.svg)
 
-    User->>OS: Save file.ts
-    OS->>Chokidar: File change event
-    Chokidar->>Chokidar: Wait 100ms (stability)
-    Chokidar->>Watcher: 'change' event
-    Watcher->>Watcher: _shouldWatch('.ts')
-    Watcher->>Watcher: _hashFile()
-    Watcher->>Callback: onFileChanged(path, hash)
-    Callback->>Callback: Mark file DIRTY
-```
+This sequence shows the complete event flow. @parcel/watcher uses native OS APIs for maximum performance, batches events to reduce overhead, and delivers them to our callback. We filter by extension and ignore patterns before computing the hash and invoking the appropriate callback.
 
-This sequence shows the complete event flow from user saving a file to the callback execution. The stability threshold prevents premature events during active writing, ensuring the hash is computed on the final file state.
-
-### Step 7: Stopping the Watcher
+### Step 9: Stopping the Watcher
 
 ```typescript
-stop(): void {
-    if (this.watcher) {
-        this.watcher.close();
+async stop(): Promise<void> {
+    if (this.subscription) {
+        await this.subscription.unsubscribe();
+        this.subscription = null;
         console.log('File watcher stopped.');
     }
 }
 ```
 
-The `stop()` method cleanly closes the chokidar watcher, releasing OS resources and file handles. This should be called during application shutdown or when watching is no longer needed.
+The `stop()` method asynchronously unsubscribes from file system events, releasing native resources and file handles. This should be called during application shutdown or when watching is no longer needed.
 
 ## Part 5: Running the Watcher
 
@@ -348,118 +372,6 @@ You'll see real-time output in the watcher terminal:
 
 Notice how each operation shows a different hash value, demonstrating content-based change detection.
 
-## Part 6: Processing Flow
+## Conclusion
 
-```mermaid
-graph TB
-    subgraph "Input"
-        A[File System Events]
-    end
-
-    subgraph "Initialization"
-        B[Load Chokidar]
-        C[Configure Options]
-        D[Set Ignored Patterns]
-        E[Set Extensions]
-    end
-
-    subgraph "Event Processing"
-        F{Event Type?}
-        G[add]
-        H[change]
-        I[unlink]
-    end
-
-    subgraph "Filtering & Hashing"
-        J{Extension<br/>Match?}
-        K[Read File]
-        L[SHA-256 Hash]
-    end
-
-    subgraph "Output"
-        M[onFileAdded Callback]
-        N[onFileChanged Callback]
-        O[onFileDeleted Callback]
-    end
-
-    A --> B
-    B --> C
-    C --> D
-    D --> E
-    E --> F
-    F --> G
-    F --> H
-    F --> I
-    G --> J
-    H --> J
-    I --> J
-    J -->|Yes| K
-    J -->|No| P[Skip]
-    K --> L
-    L --> M
-    L --> N
-    L --> O
-```
-
-This flow diagram illustrates the complete processing pipeline: initialization loads chokidar and configures options, events are filtered by type and extension, valid files are hashed, and appropriate callbacks are invoked with the computed hash.
-
-## Summary
-
-In this lab, you learned:
-
-| Concept | Description |
-|---------|-------------|
-| **File Watching** | Using OS-level APIs to detect file changes |
-| **Chokidar** | Cross-platform file watcher with reliability |
-| **Event Types** | add, change, unlink (delete) |
-| **Extension Filtering** | Only watch source files |
-| **Hash on Event** | Compute content hash immediately |
-| **Debouncing** | Wait for writes to finish before firing events |
-
-### Key Takeaways
-
-1. **File watcher is the first step** - Detects when users save files in real-time
-2. **OS-level APIs are fast** - Events fire within milliseconds of file changes
-3. **Chokidar handles edge cases** - Cross-platform reliability across macOS, Linux, Windows
-4. **Hash immediately** - Compute hash when event fires for accurate change detection
-5. **Filter early** - Process only source files to reduce overhead
-
-### How This Fits in the Pipeline
-
-```mermaid
-graph TB
-    subgraph "Lab 05: FILE WATCHER (This Lab)"
-        A[Detect file changes using chokidar]
-        B[Filter by extension .js .ts .py etc]
-        C[Compute SHA-256 hash on event]
-        D[Fire callbacks for add/change/delete]
-    end
-
-    subgraph "Lab 06: CHUNK HASHING (Next Lab)"
-        E[Compare new hash with stored hash]
-        F[If changed - Mark file as DIRTY]
-        G[Parse AST - Create chunks - Hash chunks]
-        H[Compare chunk hashes - Find changed chunks]
-    end
-
-    A --> B
-    B --> C
-    C --> D
-    D --> E
-    E --> F
-    F --> G
-    G --> H
-```
-
-The file watcher serves as the entry point for the indexing pipeline. It detects file changes in real-time and computes hashes, which the next lab will use to identify which chunks need re-indexing.
-
-## What's Next
-
-In upcoming labs, you'll build upon the file watcher:
-
-- **Lab 06: Chunk Hashing** - Hash file content, detect changes, and compare chunk hashes
-- **Lab 07: Merkle Tree** - Build file-level Merkle trees using SHA-256 hashes
-- **Lab 08: Client-Server Sync** - Sync Merkle trees between client and server
-- **Lab 09: Selective Re-indexing** - Only re-embed chunks that actually changed
-
-By completing this lab, you've built the foundation for incremental code indexing—a critical component of modern AI-powered development tools like Cursor and GitHub Copilot.
+You've built a production-grade file watcher using @parcel/watcher—the same technology powering VS Code, Cursor IDE, and other professional development tools. This watcher uses native OS-level APIs (FSEvents on macOS, inotify on Linux, ReadDirectoryChangesW on Windows) to detect file changes in real-time with minimal CPU overhead. By filtering files based on extensions and ignore patterns, then computing SHA-256 hashes immediately when changes occur, you've created the foundation for an intelligent code indexing system. The event batching and initial scan capabilities ensure efficient handling of large codebases, while the subscription-based API provides clean integration points for downstream processing. This file watcher is the critical first step in the change detection pipeline—it detects when users save files, computes content hashes, and triggers the re-indexing process that will identify exactly which code chunks need to be updated.

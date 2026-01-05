@@ -2,7 +2,7 @@ import * as path from 'path';
 import * as crypto from 'crypto';
 import * as fs from 'fs';
 import { fileURLToPath } from 'url';
-import type { FSWatcher } from 'chokidar';
+import * as parcelWatcher from '@parcel/watcher';
 
 /**
  * Options for SimpleFileWatcher
@@ -22,7 +22,7 @@ export interface FileWatcherOptions {
  * SimpleFileWatcher - Demonstrates basic file watching for code indexing
  *
  * Key concepts:
- * 1. Watch for file changes using OS-level APIs (via chokidar)
+ * 1. Watch for file changes using OS-level APIs (via @parcel/watcher)
  * 2. Fire events on: add, change, unlink (delete)
  * 3. Ignore: node_modules, .git, and other non-source files
  */
@@ -30,8 +30,9 @@ export class SimpleFileWatcher {
     private watchPath: string;
     private ignored: string[];
     private extensions: string[];
-    private watcher: FSWatcher | null = null;
-    
+    private subscription: parcelWatcher.AsyncSubscription | null = null;
+    private trackedFiles = new Set<string>();
+
     // Callbacks
     public onFileAdded: (filePath: string, hash: string | null) => void;
     public onFileChanged: (filePath: string, hash: string | null) => void;
@@ -49,7 +50,7 @@ export class SimpleFileWatcher {
             '**/*.log',
         ];
         this.extensions = options.extensions || ['.js', '.ts', '.jsx', '.tsx', '.py', '.java', '.go', '.rs'];
-        
+
         // Callbacks
         this.onFileAdded = options.onFileAdded || this._defaultHandler('added');
         this.onFileChanged = options.onFileChanged || this._defaultHandler('changed');
@@ -77,6 +78,27 @@ export class SimpleFileWatcher {
     }
 
     /**
+     * Check if file should be ignored based on patterns
+     */
+    private _shouldIgnore(filePath: string): boolean {
+        const relativePath = path.relative(this.watchPath, filePath);
+
+        for (const pattern of this.ignored) {
+            // Convert glob pattern to simple string matching
+            const regexPattern = pattern
+                .replace(/\*\*/g, '.*')
+                .replace(/\*/g, '[^/]*')
+                .replace(/\//g, '[\\\\/]');
+
+            const regex = new RegExp(regexPattern);
+            if (regex.test(relativePath) || regex.test(filePath)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /**
      * Compute SHA-256 hash of file content
      */
     private _hashFile(filePath: string): string | null {
@@ -89,60 +111,90 @@ export class SimpleFileWatcher {
     }
 
     /**
+     * Perform initial scan of directory
+     */
+    private async _initialScan(): Promise<void> {
+        const scanDir = (dir: string) => {
+            try {
+                const entries = fs.readdirSync(dir, { withFileTypes: true });
+
+                for (const entry of entries) {
+                    const fullPath = path.join(dir, entry.name);
+
+                    if (this._shouldIgnore(fullPath)) {
+                        continue;
+                    }
+
+                    if (entry.isDirectory()) {
+                        scanDir(fullPath);
+                    } else if (entry.isFile() && this._shouldWatch(fullPath)) {
+                        this.trackedFiles.add(fullPath);
+                        const hash = this._hashFile(fullPath);
+                        this.onFileAdded(fullPath, hash);
+                    }
+                }
+            } catch (err) {
+                // Ignore directories we can't read
+            }
+        };
+
+        scanDir(this.watchPath);
+    }
+
+    /**
      * Start watching for file changes
      */
     async start(): Promise<this> {
-        // Dynamic import for chokidar (ESM module)
-        const chokidar = await import('chokidar');
-        
         console.log(`Starting file watcher on: ${path.resolve(this.watchPath)}`);
         console.log(`Watching extensions: ${this.extensions.join(', ')}`);
         console.log(`Ignoring: ${this.ignored.join(', ')}`);
         console.log('');
 
-        this.watcher = chokidar.watch(this.watchPath, {
-            ignored: this.ignored,
-            persistent: true,
-            ignoreInitial: false,  // Set to true to skip initial scan
-            awaitWriteFinish: {
-                stabilityThreshold: 100,  // Wait 100ms after last write
-                pollInterval: 50,
-            },
-        });
+        // Perform initial scan
+        await this._initialScan();
 
-        // File added
-        this.watcher.on('add', (filePath: string) => {
-            if (this._shouldWatch(filePath)) {
-                const hash = this._hashFile(filePath);
-                this.onFileAdded(filePath, hash);
+        // Start watching for changes
+        this.subscription = await parcelWatcher.subscribe(
+            this.watchPath,
+            (err: Error | null, events: parcelWatcher.Event[]) => {
+                if (err) {
+                    this.onError(err);
+                    return;
+                }
+
+                for (const event of events) {
+                    const filePath = event.path;
+
+                    // Skip if should be ignored
+                    if (this._shouldIgnore(filePath)) {
+                        continue;
+                    }
+
+                    // Skip if not a watched extension
+                    if (!this._shouldWatch(filePath)) {
+                        continue;
+                    }
+
+                    // Handle different event types
+                    if (event.type === 'create') {
+                        if (!this.trackedFiles.has(filePath)) {
+                            this.trackedFiles.add(filePath);
+                            const hash = this._hashFile(filePath);
+                            this.onFileAdded(filePath, hash);
+                        }
+                    } else if (event.type === 'update') {
+                        const hash = this._hashFile(filePath);
+                        this.onFileChanged(filePath, hash);
+                    } else if (event.type === 'delete') {
+                        this.trackedFiles.delete(filePath);
+                        this.onFileDeleted(filePath, null);
+                    }
+                }
             }
-        });
+        );
 
-        // File changed
-        this.watcher.on('change', (filePath: string) => {
-            if (this._shouldWatch(filePath)) {
-                const hash = this._hashFile(filePath);
-                this.onFileChanged(filePath, hash);
-            }
-        });
-
-        // File deleted
-        this.watcher.on('unlink', (filePath: string) => {
-            if (this._shouldWatch(filePath)) {
-                this.onFileDeleted(filePath, null);
-            }
-        });
-
-        // Ready (initial scan complete)
-        this.watcher.on('ready', () => {
-            console.log('Initial scan complete. Watching for changes...\n');
-            this.onReady();
-        });
-
-        // Error
-        this.watcher.on('error', (err: unknown) => {
-            this.onError(err instanceof Error ? err : new Error(String(err)));
-        });
+        console.log('Initial scan complete. Watching for changes...\n');
+        this.onReady();
 
         return this;
     }
@@ -150,9 +202,10 @@ export class SimpleFileWatcher {
     /**
      * Stop watching
      */
-    stop(): void {
-        if (this.watcher) {
-            this.watcher.close();
+    async stop(): Promise<void> {
+        if (this.subscription) {
+            await this.subscription.unsubscribe();
+            this.subscription = null;
             console.log('File watcher stopped.');
         }
     }
@@ -161,23 +214,12 @@ export class SimpleFileWatcher {
      * Get list of watched files
      */
     getWatchedFiles(): string[] {
-        if (!this.watcher) return [];
-        const watched = this.watcher.getWatched();
-        const files: string[] = [];
-        for (const [dir, items] of Object.entries(watched)) {
-            for (const item of items) {
-                const fullPath = path.join(dir, item);
-                if (this._shouldWatch(fullPath)) {
-                    files.push(fullPath);
-                }
-            }
-        }
-        return files;
+        return Array.from(this.trackedFiles);
     }
 }
 
 // Run directly if executed as main
-const isMainModule = import.meta.url === `file://${process.argv[1]?.replace(/\\/g, '/')}` || 
+const isMainModule = import.meta.url === `file://${process.argv[1]?.replace(/\\/g, '/')}` ||
                      (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]);
 if (isMainModule) {
     (async () => {
@@ -207,9 +249,9 @@ if (isMainModule) {
         await watcher.start();
 
         // Handle graceful shutdown
-        process.on('SIGINT', () => {
+        process.on('SIGINT', async () => {
             console.log('\nShutting down...');
-            watcher.stop();
+            await watcher.stop();
             process.exit(0);
         });
 
@@ -222,4 +264,3 @@ if (isMainModule) {
         console.log('');
     })();
 }
-
