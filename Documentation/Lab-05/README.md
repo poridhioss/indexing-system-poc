@@ -32,16 +32,9 @@ Without a file watcher, you'd have to scan the entire codebase periodically, whi
 
 ### High-Level Overview
 
-```mermaid
-graph LR
-    A[User Saves File] --> B[OS-Level Event]
-    B --> C[Chokidar Watcher]
-    C --> D[File Hash Computation]
-    D --> E[Event Callback]
-    E --> F[Mark as DIRTY]
-```
+![High-Level Overview](./images/infra-2.svg)
 
-The file watcher sits between the operating system and your indexing pipeline. When a user saves a file, the OS notifies chokidar, which triggers hash computation and fires callbacks to mark files as dirty for re-indexing.
+The file watcher monitors a folder containing multiple files and provides instant detection when any file changes. It acts as the bridge between your file system and the change detection system. When files are added, modified, or deleted within the watched folder, the watcher immediately captures these events and triggers the appropriate callbacks—enabling real-time response to code changes without polling or manual scanning.
 
 ### File Watcher in the Pipeline
 
