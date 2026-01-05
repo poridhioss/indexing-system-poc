@@ -12,3 +12,7 @@
 
 [File Watching for Change Detection](https://github.com/poridhioss/indexing-system-poc/tree/main/Documentation/Lab-05)
 
+## Cursor Case Study
+
+[Cursor Case Study](https://github.com/poridhioss/indexing-system-poc/blob/main/Chunk-Hashing/understanding-readme.md)
+
