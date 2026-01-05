@@ -1,4 +1,4 @@
-# Lab 02: Deploy FIM Backend on AWS Lambda
+# Deploy FIM Backend on AWS Lambda
 
 AWS Lambda is a powerful serverless compute service that enables you to run code without the complexity of provisioning or managing servers. It automatically scales your applications by running code in response to events, making it an efficient choice for building microservices, event-driven applications, and backend services.
 

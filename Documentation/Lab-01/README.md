@@ -1,4 +1,4 @@
-# Lab 01: Introduction to Codestral and FIM
+# Introduction to Codestral and FIM
 
 In this lab, you'll learn the fundamentals of AI-powered code completion. We'll set up Codestral—Mistral AI's specialized code completion model—and make your first FIM (Fill-In-Middle) API requests.
 
