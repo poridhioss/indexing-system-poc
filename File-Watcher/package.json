@@ -2,10 +2,15 @@
   "name": "file-watcher",
   "version": "1.0.0",
   "description": "Simple file watcher demonstration for code indexing",
-  "main": "src/example.js",
+  "type": "module",
+  "main": "dist/example.js",
+  "types": "dist/example.d.ts",
   "scripts": {
-    "start": "node src/example.js",
-    "watch": "node src/watcher.js",
+    "build": "tsc",
+    "start": "node dist/example.js",
+    "dev": "ts-node --esm src/example.ts",
+    "watch": "node dist/watcher.js",
+    "clean": "rm -rf dist",
     "test": "echo \"Error: no test specified\" && exit 1"
   },
   "keywords": [
@@ -18,5 +23,10 @@
   "license": "ISC",
   "dependencies": {
     "chokidar": "^5.0.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.10.0",
+    "ts-node": "^10.9.2",
+    "typescript": "^5.3.0"
   }
 }
