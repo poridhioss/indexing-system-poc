@@ -315,7 +315,6 @@ The `stop()` method asynchronously unsubscribes from file system events, releasi
 Run the watcher to monitor the test-project directory:
 
 ```bash
-npm install
 npm run build
 npm run watch
 ```
@@ -324,53 +323,22 @@ This automatically creates a `test-project` directory if it doesn't exist and st
 
 ### Expected Output
 
-```
-Starting file watcher on: /path/to/indexing-system-poc/File-Watcher/test-project
-Watching extensions: .js, .ts, .jsx, .tsx, .py, .java, .go, .rs
-Ignoring: **/node_modules/**, **/.git/**, **/dist/**, **/build/**, **/*.log
-
-Initial scan complete. Watching for changes...
-
-Press Ctrl+C to stop watching.
-
-Try creating/editing/deleting files in the test-project directory.
-Example commands:
-  echo "console.log(1)" > test-project/test.js
-  echo "console.log(2)" >> test-project/test.js
-  rm test-project/test.js
-```
+![Expected Output](./images/image-1.png)
 
 ### Manual Testing
 
-In another terminal, test the watcher with file operations:
-
-```bash
-# Navigate to test-project
-cd test-project
-
-# Create a file
-echo "console.log('Hello');" > demo.js
-
-# Modify the file
-echo "console.log('World');" >> demo.js
-
-# Delete the file
-rm demo.js
+Now inside the `test-project` directory, create a file called `demo.js` and add the following content:
+```javascript
+console.log('Hello');
 ```
 
 You'll see real-time output in the watcher terminal:
 
-```
-[ADD]    test-project/demo.js
-         Hash: a7f3e2b1c4d5e6f7...
-
-[CHANGE] test-project/demo.js
-         Hash: 8b9c0d1e2f3a4b5c...
-
-[DELETE] test-project/demo.js
-```
+![Expected Output](./images/image-2.png)
 
 Notice how each operation shows a different hash value, demonstrating content-based change detection.
+
+Now modify the file and save it, and you'll see the the changes in the terminal with different hash values. Try to delete the file and you'll see the delete event in the terminal.
 
 ## Conclusion
 
