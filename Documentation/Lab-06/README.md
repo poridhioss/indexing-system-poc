@@ -1,882 +1,905 @@
-# Chunk Hashing Strategies
+# Merkle Tree for Change Detection
 
-In Lab 04, you built a semantic chunker that splits code into meaningful units (functions, classes, methods). In Lab 05, you built a file watcher to detect file changes. Now you need a way to efficiently detect when chunks change. This lab teaches you content-based hashing strategies that form the foundation of incremental re-indexing.
+After detecting file changes with a file watcher and computing content hashes, you need an efficient way to detect if ANY file changed in your project. This lab teaches you how to build a Merkle tree that enables O(1) change detection through a single root hash comparison.
 
-When a file changes, you don't want to re-embed the entire codebase. By hashing each chunk, you can compare hashes and only re-embed chunks that actually changed.
+When a user saves a file, the watcher computes the file hash, rebuilds the Merkle tree, and updates the root hash. The dirty queue tracks which files changed since the last sync.
 
 ## Prerequisites
 
-- Completed **Lab 04: AST-Based Semantic Code Chunking**
-- Completed **Lab 05: File Watcher Implementation**
+- Completed **Real-Time File Monitoring Lab**
 - Node.js 18+ installed
-- Understanding of hash functions (basic)
+- Basic understanding of binary trees and hash functions
 
 ## What You'll Learn
 
-1. Why content-based hashing is essential for incremental indexing
-2. MD5 vs SHA-256: when to use each algorithm
-3. Implementing chunk hashing with normalization
-4. Building a hash registry for change detection
-5. Integrating hashing with the semantic chunker (matching puku-vs-editor)
+1. What Merkle trees are and why they're used for change detection
+2. Building a Merkle tree from file hashes
+3. Computing the Merkle root hash
+4. Recomputing the root when files change
+5. Maintaining dirty queue and merkle state in local storage
 
-## Part 1: Why Hash Chunks?
+## Part 1: Why Merkle Trees?
 
-### The Re-indexing Problem
+### The Change Detection Problem
 
-Consider a codebase with 10,000 files and 50,000 chunks. When a developer changes one file:
+In a code indexing system with thousands of files, you need to answer one critical question:
 
-**Without Hashing (Naive Approach)**:
-- Re-parse all 10,000 files
-- Re-chunk everything
-- Re-embed 50,000 chunks
-- Cost: ~$5-10 per change, 10+ minutes
+**"Has ANYTHING changed since the last sync?"**
 
-**With Hashing (Smart Approach)**:
-- Hash the changed file
-- Compare with stored hash
-- Re-chunk only changed files
-- Re-embed only changed chunks
-- Cost: ~$0.001 per change, <1 second
+Without a Merkle tree, you'd have to:
+1. Compare every file hash individually (O(n) operation)
+2. Send potentially thousands of hashes to the server
+3. Waste bandwidth and compute on unchanged codebases
 
-### Hash-Based Change Detection Flow
+With a Merkle tree:
+1. Compare a single root hash (O(1) operation)
+2. If roots match, nothing changed - done in milliseconds
+3. If roots differ, process only the dirty files
 
-```
-┌─────────────────────────────────────────────────────────────────────────────────┐
-│                         HASH-BASED CHANGE DETECTION                             │
-├─────────────────────────────────────────────────────────────────────────────────┤
-│                                                                                 │
-│   File Changed                                                                  │
-│        │                                                                        │
-│        ▼                                                                        │
-│   ┌─────────────┐     ┌─────────────┐     ┌─────────────┐                      │
-│   │  Re-chunk   │────>│ Hash Each   │────>│  Compare    │                      │
-│   │    File     │     │   Chunk     │     │   Hashes    │                      │
-│   └─────────────┘     └─────────────┘     └─────────────┘                      │
-│                                                  │                              │
-│                              ┌───────────────────┼───────────────────┐          │
-│                              │                   │                   │          │
-│                              ▼                   ▼                   ▼          │
-│                        ┌──────────┐        ┌──────────┐        ┌──────────┐    │
-│                        │   NEW    │        │ MODIFIED │        │UNCHANGED │    │
-│                        │  Chunk   │        │  Chunk   │        │  Chunk   │    │
-│                        └──────────┘        └──────────┘        └──────────┘    │
-│                              │                   │                   │          │
-│                              ▼                   ▼                   ▼          │
-│                        ┌──────────┐        ┌──────────┐        ┌──────────┐    │
-│                        │ Generate │        │ Generate │        │   Skip   │    │
-│                        │Embedding │        │Embedding │        │Re-embed  │    │
-│                        └──────────┘        └──────────┘        └──────────┘    │
-│                                                                                 │
-└─────────────────────────────────────────────────────────────────────────────────┘
+### What is a Merkle Tree?
+
+A **Merkle Tree** is a data structure used primarily in computer science and cryptography to efficiently and securely verify the integrity and consistency of large datasets. It is a binary tree where the leaves store cryptographic hashes of data blocks, and each non-leaf node contains a hash of its child nodes.
+
+![Merkle Tree Structure](./images/image-4.png)
+
+A Merkle tree is a binary tree where:
+- **Leaf nodes** contain hashes of individual files (or data blocks)
+- **Parent nodes** contain hashes of their children's hashes combined
+- **Root node** (Merkle Root) represents a fingerprint of the entire tree
+
+```mermaid
+graph TB
+    Root[Root Hash: ab61bfc2]
+    P1[Parent: 05cb0a28]
+    P2[Parent: 38b7e777]
+    L1[Leaf: auth.ts<br/>5f8dbcfb]
+    L2[Leaf: database.ts<br/>554c86c9]
+    L3[Leaf: api.ts<br/>5b7718d7]
+    L4[Leaf: config.ts<br/>37b7e566]
+
+    Root --> P1
+    Root --> P2
+    P1 --> L1
+    P1 --> L2
+    P2 --> L3
+    P2 --> L4
 ```
 
-## Part 2: Hash Algorithm Comparison
+If ANY leaf changes, all parent hashes up to the root change. This makes change detection extremely efficient.
 
-### MD5 vs SHA-256
+### Core Concepts of Merkle Trees
 
-| Aspect | MD5 | SHA-256 |
-|--------|-----|---------|
-| **Speed** | ~600 MB/s | ~400 MB/s |
-| **Output** | 128 bits (32 hex chars) | 256 bits (64 hex chars) |
-| **Collision Resistance** | Broken (but fine for change detection) | Cryptographic |
-| **Use Case** | Fast change detection, caching | Security, integrity, Merkle trees |
-| **Node.js** | Built-in (`crypto`) | Built-in (`crypto`) |
+#### 1. Hashing
 
-### Which to Use?
+A Merkle Tree relies on cryptographic hash functions (e.g., SHA-256) to create fixed-length outputs (hashes) from input data. Hashes are unique to the input data, so even a small change in the data results in a completely different hash.
 
-For chunk hashing in code indexing:
-- **MD5** is preferred for speed and compatibility with puku-vs-editor
-- Collision probability is negligible for change detection use case
-- We're not protecting against malicious attacks, just detecting changes
+![Hashing Concept](./images/image-1.png)
 
-For Merkle tree integrity:
-- **SHA-256** is preferred
-- Cryptographic guarantees matter for tree integrity
+This property is crucial for change detection—if a file's content changes even slightly, its hash will be completely different, propagating the change up the tree.
 
-### Puku-vs-editor Approach (What We Use)
+#### 2. Leaf Nodes
+
+The bottom level of the tree consists of leaf nodes, each containing a hash of a data block (e.g., a file in our code indexing system).
+
+**Example**: If you have four files (auth.ts, database.ts, api.ts, config.ts), their hashes (H1 = hash(auth.ts), H2 = hash(database.ts), etc.) form the leaf nodes.
+
+#### 3. Non-Leaf Nodes (Parent Nodes)
+
+Each parent node is created by hashing the concatenated hashes of its child nodes.
+
+**Example**: For leaf nodes with hashes H1 and H2, the parent node's hash is H12 = hash(H1 + H2).
+
+#### 4. Root Node (Merkle Root)
+
+The topmost node of the tree, known as the Merkle Root, is a single hash that represents all the data in the tree. The Merkle Root is a compact way to summarize the entire dataset—in our case, the entire codebase.
+
+#### 5. Binary Structure
+
+Merkle Trees are typically binary, meaning each parent node has exactly two children. If the number of data blocks is odd, the last hash may be duplicated or promoted to maintain the binary structure.
+
+### Merkle Tree in the Pipeline
+
+```mermaid
+graph TB
+    A[User Saves File] --> B[File Watcher Detects]
+    B --> C[Compute File Hash]
+    C --> D{Hash Changed?}
+    D -->|No| E[Skip - No Change]
+    D -->|Yes| F[Update Leaf in Tree]
+    F --> G[Recompute Parent Hashes]
+    G --> H[Update Merkle Root]
+    H --> I[Add to Dirty Queue]
+    I --> J[Save to .puku/]
+```
+
+### Real-World Usage
+
+Merkle trees are used everywhere:
+- **Git** uses Merkle trees to detect changes in commits
+- **Blockchain** uses them to verify data integrity
+- **VS Code** and **Cursor** use them for efficient code indexing
+- **Bazel** and **Nix** use them for build caching
+
+## Part 2: Understanding the Algorithm
+
+### How a Merkle Tree Works
+
+To construct a Merkle Tree, we follow these fundamental steps:
+
+1. Divide the dataset into smaller blocks (e.g., files in our codebase)
+2. Compute the hash of each block to create leaf nodes
+3. Pair the hashes and compute the hash of each pair to form the next level of the tree
+4. Repeat until a single hash (Merkle Root) remains
+
+**Example with our code files:**
 
 ```
-File Level:  MD5 (for content change detection, same as chunks)
-Chunk Level: MD5 (matching puku-vs-editor implementation)
-Merkle Tree: SHA-256 (for cryptographic integrity)
+Data Blocks: auth.ts, database.ts, api.ts, config.ts
+Leaf Hashes: H1 = hash(auth.ts), H2 = hash(database.ts),
+             H3 = hash(api.ts), H4 = hash(config.ts)
+Parent Hashes: H12 = hash(H1 + H2), H34 = hash(H3 + H4)
+Merkle Root: HR = hash(H12 + H34)
 ```
 
-This matches the production implementation in puku-vs-editor.
+### Merkle Tree Construction Algorithm
+
+The algorithm constructs a Merkle Tree from a list of data blocks using a cryptographic hash function (SHA-256). Here's the detailed process:
+
+#### Step 1: Prepare Data Blocks
+
+Start with a list of files (or data blocks) in your project. Ensure the files are in a consistent format for hashing.
+
+![Prepare Data Blocks](./images/image-5.png)
+
+In our implementation, we scan the directory and collect all source files (.js, .ts, .tsx, .jsx) while skipping ignored directories (node_modules, .git, dist, .puku).
+
+#### Step 2: Hash the Data Blocks
+
+Compute the cryptographic hash (SHA-256) of each file to create the **leaf nodes** of the tree. Store these hashes in a list.
+
+![Hash Data Blocks](./images/image-6.png)
+
+**Our implementation:**
+```typescript
+// Each file gets a SHA-256 hash
+auth.ts    → SHA-256(path + content) → 5f8dbcfb...
+database.ts → SHA-256(path + content) → 554c86c9...
+api.ts      → SHA-256(path + content) → 5b7718d7...
+config.ts   → SHA-256(path + content) → 37b7e566...
+```
+
+Including the file path in the hash ensures that identical files in different locations have unique hashes.
+
+#### Step 3: Handle Odd Number of Hashes
+
+If the number of leaf hashes is odd, we promote the last hash to the next level (or duplicate it if needed to maintain the binary structure).
+
+#### Step 4: Build the Tree Bottom-Up
+
+Pair the leaf hashes and compute the hash of each pair to form the **parent nodes**. Repeat this process, creating higher levels of the tree by hashing pairs of nodes, until a single hash remains: the **Merkle Root**.
+
+![Build Tree Bottom-Up](./images/image-7.png)
+
+**Example pairing:**
+```
+Level 0 (Leaves):
+[5f8dbcfb] [554c86c9] [5b7718d7] [37b7e566]
+
+Level 1 (Pairs):
+[05cb0a28] = hash(5f8dbcfb + 554c86c9)
+[38b7e777] = hash(5b7718d7 + 37b7e566)
+
+Level 2 (Root):
+[ab61bfc2] = hash(05cb0a28 + 38b7e777)
+```
+
+The root hash `ab61bfc2...` represents the entire tree.
+
+#### Step 5: Output the Merkle Root
+
+The Merkle Root is a single hash that summarizes all the data blocks. We store the entire tree state (root and leaves) in `.puku/merkle-state.json` for future comparisons.
+
+![Merkle Root Output](./images/image-8.png)
+
+### Recomputing on File Change
+
+When a file changes, we don't rebuild the entire tree from scratch. Instead:
+
+**When `auth.ts` changes:**
+
+```
+Old hash: 5f8dbcfb...
+New hash: 9a2c1d4e...
+              ↓
+Update affected leaf and rebuild affected parents:
+Level 0: [9a2c1d4e] [554c86c9] [5b7718d7] [37b7e566]
+              ↓
+Level 1: [7f3e8a12] = hash(9a2c1d4e + 554c86c9)  ← Changed!
+         [38b7e777] = hash(5b7718d7 + 37b7e566)  ← Unchanged
+              ↓
+Level 2: [c8d9f2a5] = hash(7f3e8a12 + 38b7e777)  ← New root!
+```
+
+The new root `c8d9f2a5...` proves something changed. We only recomputed 3 hashes (1 leaf + 2 parents) instead of rehashing all 4 files!
+
+### Algorithm Pseudocode
+
+```typescript
+function buildMerkleTree(dataBlocks):
+    if dataBlocks is empty:
+        return null
+
+    // Step 1: Hash all data blocks to create leaf nodes
+    leafHashes = []
+    for each block in dataBlocks:
+        hash = SHA256(block.path + block.content)
+        leafHashes.append(hash)
+
+    // Step 2: Build the tree iteratively
+    currentLevel = leafHashes
+    while length(currentLevel) > 1:
+        nextLevel = []
+        for i from 0 to length(currentLevel) step 2:
+            if i + 1 < length(currentLevel):
+                // Pair two hashes and compute parent hash
+                parentHash = SHA256(currentLevel[i] + currentLevel[i+1])
+            else:
+                // Promote last hash if odd number
+                parentHash = currentLevel[i]
+            nextLevel.append(parentHash)
+        currentLevel = nextLevel
+
+    // Step 3: Return the Merkle Root
+    return currentLevel[0]
+```
+
+### Edge Cases
+
+1. **Empty Input**: Return null or error
+2. **Single File**: The Merkle Root is simply the hash of that file
+3. **Odd Number of Files**: Promote the last hash to the next level
 
 ## Part 3: Project Setup
 
-Create a new project that extends your semantic chunker:
+Navigate to the Merkle-Tree-Builder project:
 
 ```bash
-mkdir chunk-hashing
-cd chunk-hashing
-npm init -y
-npm install web-tree-sitter tree-sitter-javascript tree-sitter-python
+cd indexing-system-poc/Merkle-Tree-Builder
+npm install
 ```
 
-**Dependencies**:
+### Project Structure
 
-| Package | Purpose |
-|---------|---------|
-| `web-tree-sitter` | AST parsing (from previous lab) |
-| `tree-sitter-*` | Language grammars |
-
-Note: We use Node.js built-in `crypto` module for MD5/SHA-256, no external packages needed.
-
-## Part 4: Implementation
-
-### Step 1: Hash Utilities
-
-Create `src/hash-utils.js`:
-
-```javascript
-const crypto = require('crypto');
-
-/**
- * Compute MD5 hash of content (same as puku-vs-editor)
- * Used for file-level content hashing to detect changes
- * @param {string} content - Content to hash
- * @returns {string} Hex-encoded MD5 hash
- */
-function md5(content) {
-    return crypto.createHash('md5').update(content).digest('hex');
-}
-
-/**
- * Compute SHA-256 hash of content
- * Used for Merkle tree (cryptographic integrity)
- * @param {string} content - Content to hash
- * @returns {string} Hex-encoded SHA-256 hash
- */
-function sha256(content) {
-    return crypto.createHash('sha256').update(content, 'utf8').digest('hex');
-}
-
-/**
- * Normalize content before hashing (optional)
- * Removes variations that shouldn't affect semantic meaning:
- * - Trailing whitespace
- * - Multiple blank lines -> single blank line
- * - Consistent line endings (CRLF -> LF)
- *
- * Note: puku-vs-editor does NOT normalize before hashing.
- * This is provided for optional use cases.
- *
- * @param {string} content - Raw content
- * @returns {string} Normalized content
- */
-function normalizeContent(content) {
-    return content
-        // Normalize line endings (Windows -> Unix)
-        .replace(/\r\n/g, '\n')
-        // Remove trailing whitespace from each line
-        .split('\n')
-        .map(line => line.trimEnd())
-        .join('\n')
-        // Collapse multiple blank lines into one
-        .replace(/\n{3,}/g, '\n\n')
-        // Remove trailing newline
-        .trimEnd();
-}
-
-/**
- * Compute content hash (MD5, matching puku-vs-editor)
- * @param {string} content - Content to hash
- * @param {boolean} normalize - Whether to normalize content first (default: false)
- * @returns {string} MD5 hash of content
- */
-function hashContent(content, normalize = false) {
-    const toHash = normalize ? normalizeContent(content) : content;
-    return md5(toHash);
-}
-
-module.exports = {
-    md5,
-    sha256,
-    normalizeContent,
-    hashContent,
-};
+```
+Merkle-Tree-Builder/
+├── src/
+│   ├── merkle-tree.ts         # Merkle tree implementation
+│   ├── watcher.ts             # File watcher integration
+│   └── example.ts             # Demo application
+├── test-project/              # 10 sample files for testing
+│   ├── src/
+│   │   ├── auth.ts
+│   │   ├── database.ts
+│   │   ├── api.ts
+│   │   ├── validator.ts
+│   │   ├── logger.ts
+│   │   ├── config.ts
+│   │   └── cache.ts
+│   └── utils/
+│       ├── helpers.ts
+│       ├── string.ts
+│       └── date.ts
+├── .puku/                     # Local state (created on first run)
+│   ├── merkle-state.json      # Tree structure and root
+│   └── dirty-queue.json       # Files changed since last sync
+├── dist/                      # Compiled output
+├── package.json
+└── tsconfig.json
 ```
 
-### Step 2: Chunk Hasher
+### Dependencies
 
-Create `src/chunk-hasher.js`:
+| Package | Version | Purpose |
+|---------|---------|---------|
+| `@parcel/watcher` | ^2.4.1 | File system monitoring |
+| `crypto` | built-in | SHA-256 hashing |
+| `fs` | built-in | File system operations |
 
-```javascript
-const { hashContent, md5 } = require('./hash-utils');
+## Part 4: Implementation Walkthrough
 
-/**
- * Represents a hashed chunk with content and metadata
- * Matches puku-vs-editor's chunk structure
- */
-class HashedChunk {
-    constructor({
-        text,
-        contentHash,
-        type,
-        name,
-        lineStart,
-        lineEnd,
-        language,
-        filePath,
-        metadata = {}
-    }) {
-        this.text = text;
-        this.contentHash = contentHash;  // MD5 hash (matching puku-vs-editor)
-        this.type = type;                // chunkType in puku-vs-editor
-        this.name = name;                // symbolName in puku-vs-editor
-        this.lineStart = lineStart;
-        this.lineEnd = lineEnd;
-        this.language = language;        // languageId in puku-vs-editor
-        this.filePath = filePath;        // uri in puku-vs-editor
-        this.metadata = metadata;
-    }
+### Step 1: File Hashing
 
-    /**
-     * Character count
-     */
-    get charCount() {
-        return this.text.length;
-    }
+[merkle-tree.ts:44-57](../../Merkle-Tree-Builder/src/merkle-tree.ts#L44-L57)
 
-    /**
-     * Line count
-     */
-    get lineCount() {
-        return this.lineEnd - this.lineStart + 1;
-    }
-
-    /**
-     * Unique identifier combining file path and hash
-     */
-    get id() {
-        return `${this.filePath}:${this.contentHash.substring(0, 12)}`;
-    }
-
-    toString() {
-        return `[${this.type}] ${this.name || '(anonymous)'} @ ${this.filePath}:${this.lineStart}-${this.lineEnd} (${this.contentHash.substring(0, 8)}...)`;
+```typescript
+hashFile(filePath: string): string | null {
+    try {
+        const content = fs.readFileSync(filePath, 'utf8');
+        return crypto
+            .createHash('sha256')
+            .update(filePath + content)
+            .digest('hex');
+    } catch (err) {
+        console.error(`Failed to hash file ${filePath}:`, err);
+        return null;
     }
 }
-
-/**
- * ChunkHasher - Adds hashing capability to semantic chunks
- * Uses MD5 to match puku-vs-editor implementation
- */
-class ChunkHasher {
-    constructor() {
-        // No initialization needed - MD5 is built into Node.js crypto
-    }
-
-    /**
-     * Initialize the hasher (no-op for MD5, kept for API compatibility)
-     */
-    async initialize() {
-        // MD5 doesn't require initialization
-        return Promise.resolve();
-    }
-
-    /**
-     * Hash a single chunk using MD5 (matching puku-vs-editor)
-     * @param {object} chunk - Semantic chunk from SemanticChunker
-     * @param {string} filePath - File path for the chunk
-     * @returns {HashedChunk}
-     */
-    hashChunk(chunk, filePath) {
-        const contentHash = hashContent(chunk.text);
-
-        return new HashedChunk({
-            text: chunk.text,
-            contentHash: contentHash,
-            type: chunk.type,
-            name: chunk.name,
-            lineStart: chunk.lineStart,
-            lineEnd: chunk.lineEnd,
-            language: chunk.language,
-            filePath: filePath,
-            metadata: { ...chunk.metadata },
-        });
-    }
-
-    /**
-     * Hash multiple chunks from a file
-     * @param {object[]} chunks - Array of semantic chunks
-     * @param {string} filePath - File path
-     * @returns {HashedChunk[]}
-     */
-    hashChunks(chunks, filePath) {
-        return chunks.map(chunk => this.hashChunk(chunk, filePath));
-    }
-
-    /**
-     * Compute file-level content hash (MD5, matching puku-vs-editor)
-     * Used to check if file content has changed
-     * @param {string} content - File content
-     * @returns {string} MD5 hash
-     */
-    hashFile(content) {
-        return md5(content);
-    }
-}
-
-module.exports = { ChunkHasher, HashedChunk };
 ```
 
-### Step 3: Hash Registry for Change Detection
+This method computes a SHA-256 hash by concatenating the file path with its content. Including the path ensures that identical files in different locations have unique hashes. If the file cannot be read, it returns null gracefully.
 
-Create `src/hash-registry.js`:
+### Step 2: Hash Pairing
 
-```javascript
-/**
- * HashRegistry - Stores and compares chunk hashes for change detection
- * Matches puku-vs-editor's cache structure (using contentHash)
- */
-class HashRegistry {
-    constructor() {
-        // Map: filePath -> Map<contentHash, HashedChunk>
-        this.fileChunks = new Map();
-        // Map: contentHash -> HashedChunk (global lookup)
-        this.hashIndex = new Map();
-        // Map: filePath -> contentHash (file-level)
-        this.fileHashes = new Map();
+[merkle-tree.ts:59-67](../../Merkle-Tree-Builder/src/merkle-tree.ts#L59-L67)
+
+```typescript
+private hashPair(left: string, right: string): string {
+    return crypto
+        .createHash('sha256')
+        .update(left + right)
+        .digest('hex');
+}
+```
+
+This method combines two child hashes to create a parent hash. The order matters—`hash(A+B)` differs from `hash(B+A)`. This is how we build the tree from bottom to top.
+
+### Step 3: Building the Tree
+
+[merkle-tree.ts:69-104](../../Merkle-Tree-Builder/src/merkle-tree.ts#L69-L104)
+
+```typescript
+buildTree(leaves: { filePath: string; hash: string }[]): MerkleNode {
+    if (leaves.length === 0) {
+        throw new Error('Cannot build Merkle tree with no leaves');
     }
 
-    /**
-     * Check if a file is already indexed with the same content hash
-     * Matches puku-vs-editor's isIndexed() method
-     * @param {string} filePath - File path (uri)
-     * @param {string} contentHash - MD5 hash of file content
-     * @returns {boolean}
-     */
-    isIndexed(filePath, contentHash) {
-        const storedHash = this.fileHashes.get(filePath);
-        return storedHash === contentHash;
-    }
+    // Create leaf nodes
+    let nodes: MerkleNode[] = leaves.map(leaf => ({
+        hash: leaf.hash,
+        filePath: leaf.filePath,
+    }));
 
-    /**
-     * Register chunks from a file
-     * @param {string} filePath - File path
-     * @param {HashedChunk[]} chunks - Hashed chunks
-     * @param {string} contentHash - MD5 hash of the entire file
-     */
-    registerFile(filePath, chunks, contentHash) {
-        // Store file hash
-        this.fileHashes.set(filePath, contentHash);
+    // Build tree bottom-up
+    while (nodes.length > 1) {
+        const nextLevel: MerkleNode[] = [];
 
-        // Create chunk map for this file
-        const chunkMap = new Map();
-        for (const chunk of chunks) {
-            chunkMap.set(chunk.contentHash, chunk);
-            this.hashIndex.set(chunk.contentHash, chunk);
-        }
-        this.fileChunks.set(filePath, chunkMap);
-    }
+        for (let i = 0; i < nodes.length; i += 2) {
+            const left = nodes[i];
+            const right = nodes[i + 1];
 
-    /**
-     * Check if a file has changed (alias for !isIndexed)
-     * @param {string} filePath - File path
-     * @param {string} newContentHash - New content hash
-     * @returns {boolean}
-     */
-    hasFileChanged(filePath, newContentHash) {
-        return !this.isIndexed(filePath, newContentHash);
-    }
-
-    /**
-     * Compare new chunks against stored chunks and categorize changes
-     * @param {string} filePath - File path
-     * @param {HashedChunk[]} newChunks - New hashed chunks
-     * @returns {{ added: HashedChunk[], modified: HashedChunk[], unchanged: HashedChunk[], removed: HashedChunk[] }}
-     */
-    compareChunks(filePath, newChunks) {
-        const oldChunkMap = this.fileChunks.get(filePath) || new Map();
-        const newChunkHashes = new Set(newChunks.map(c => c.contentHash));
-
-        const result = {
-            added: [],      // New chunks not in old set
-            modified: [],   // Chunks with same position but different hash (approximation)
-            unchanged: [],  // Chunks with same hash
-            removed: [],    // Old chunks not in new set
-        };
-
-        // Categorize new chunks
-        for (const chunk of newChunks) {
-            if (oldChunkMap.has(chunk.contentHash)) {
-                result.unchanged.push(chunk);
+            if (right) {
+                // Pair exists, hash them together
+                const parentHash = this.hashPair(left.hash, right.hash);
+                nextLevel.push({
+                    hash: parentHash,
+                    left,
+                    right,
+                });
             } else {
-                // Check if there's a chunk at similar position (heuristic for "modified")
-                const similarOld = this._findSimilarChunk(chunk, oldChunkMap);
-                if (similarOld) {
-                    result.modified.push(chunk);
-                } else {
-                    result.added.push(chunk);
-                }
+                // Odd node, promote it up
+                nextLevel.push(left);
             }
         }
 
-        // Find removed chunks
-        for (const [contentHash, chunk] of oldChunkMap) {
-            if (!newChunkHashes.has(contentHash)) {
-                // Check if it was "modified" (replaced by similar chunk)
-                const wasModified = result.modified.some(
-                    m => this._isSimilarPosition(m, chunk)
-                );
-                if (!wasModified) {
-                    result.removed.push(chunk);
-                }
-            }
-        }
-
-        return result;
+        nodes = nextLevel;
     }
 
-    /**
-     * Find a chunk at similar position (same name or overlapping lines)
-     * @private
-     */
-    _findSimilarChunk(newChunk, oldChunkMap) {
-        for (const [, oldChunk] of oldChunkMap) {
-            if (this._isSimilarPosition(newChunk, oldChunk)) {
-                return oldChunk;
+    return nodes[0];
+}
+```
+
+This method builds the Merkle tree iteratively. It starts with leaf nodes (file hashes), pairs them to create parents, and repeats until only one node remains—the root. If there's an odd number of nodes, the last node is promoted to the next level.
+
+### Step 4: Scanning Directory
+
+[merkle-tree.ts:106-156](../../Merkle-Tree-Builder/src/merkle-tree.ts#L106-L156)
+
+```typescript
+buildFromDirectory(dirPath: string, extensions: string[] = ['.js', '.ts', '.tsx', '.jsx']): MerkleNode {
+    const leaves: { filePath: string; hash: string }[] = [];
+
+    const scanDir = (dir: string) => {
+        const entries = fs.readdirSync(dir, { withFileTypes: true });
+
+        for (const entry of entries) {
+            const fullPath = path.join(dir, entry.name);
+
+            // Skip node_modules, .git, etc.
+            if (entry.name === 'node_modules' || entry.name === '.git' ||
+                entry.name === 'dist' || entry.name === '.puku') {
+                continue;
+            }
+
+            if (entry.isDirectory()) {
+                scanDir(fullPath);
+            } else if (entry.isFile()) {
+                const ext = path.extname(entry.name).toLowerCase();
+                if (extensions.includes(ext)) {
+                    const hash = this.hashFile(fullPath);
+                    if (hash) {
+                        leaves.push({ filePath: fullPath, hash });
+                    }
+                }
             }
         }
+    };
+
+    scanDir(dirPath);
+
+    // Sort leaves by file path for consistency
+    leaves.sort((a, b) => a.filePath.localeCompare(b.filePath));
+
+    const tree = this.buildTree(leaves);
+
+    // Save state
+    this.saveMerkleState({
+        root: tree.hash,
+        leaves,
+        timestamp: new Date().toISOString(),
+    });
+
+    return tree;
+}
+```
+
+This method performs a recursive directory scan to discover all source files. It filters by extension (only `.js`, `.ts`, etc.) and skips directories like `node_modules` and `.git`. Files are sorted by path for consistency, then the tree is built and saved to disk.
+
+### Step 5: Updating File Hash
+
+[merkle-tree.ts:158-199](../../Merkle-Tree-Builder/src/merkle-tree.ts#L158-L199)
+
+```typescript
+updateFileHash(filePath: string): string | null {
+    // Load current state
+    const state = this.loadMerkleState();
+    if (!state) {
+        console.error('No merkle state found. Run initial build first.');
         return null;
     }
 
-    /**
-     * Check if two chunks are at similar positions
-     * @private
-     */
-    _isSimilarPosition(chunk1, chunk2) {
-        // Same name (symbolName)
-        if (chunk1.name && chunk1.name === chunk2.name) {
-            return true;
-        }
-        // Overlapping line ranges
-        const overlap = Math.min(chunk1.lineEnd, chunk2.lineEnd) -
-                       Math.max(chunk1.lineStart, chunk2.lineStart);
-        const minSize = Math.min(chunk1.lineCount, chunk2.lineCount);
-        return overlap > minSize * 0.5; // >50% overlap
+    // Compute new hash
+    const newHash = this.hashFile(filePath);
+    if (!newHash) {
+        return null;
     }
 
-    /**
-     * Update registry with new chunks (after processing changes)
-     * @param {string} filePath - File path
-     * @param {HashedChunk[]} chunks - New chunks
-     * @param {string} contentHash - New content hash
-     */
-    updateFile(filePath, chunks, contentHash) {
-        // Remove old chunks from hash index
-        const oldChunkMap = this.fileChunks.get(filePath);
-        if (oldChunkMap) {
-            for (const [hash] of oldChunkMap) {
-                this.hashIndex.delete(hash);
-            }
+    // Update or add leaf
+    const existingLeaf = state.leaves.find(l => l.filePath === filePath);
+    if (existingLeaf) {
+        // Check if hash actually changed
+        if (existingLeaf.hash === newHash) {
+            console.log(`File ${filePath} unchanged (same hash)`);
+            return state.root; // No change
         }
-
-        // Register new state
-        this.registerFile(filePath, chunks, contentHash);
+        existingLeaf.hash = newHash;
+    } else {
+        // New file
+        state.leaves.push({ filePath, hash: newHash });
+        state.leaves.sort((a, b) => a.filePath.localeCompare(b.filePath));
     }
 
-    /**
-     * Remove a file from the registry
-     * @param {string} filePath - File path
-     */
-    removeFile(filePath) {
-        const chunkMap = this.fileChunks.get(filePath);
-        if (chunkMap) {
-            for (const [hash] of chunkMap) {
-                this.hashIndex.delete(hash);
-            }
+    // Rebuild tree
+    const tree = this.buildTree(state.leaves);
+
+    // Save updated state
+    this.saveMerkleState({
+        root: tree.hash,
+        leaves: state.leaves,
+        timestamp: new Date().toISOString(),
+    });
+
+    // Add to dirty queue
+    this.addToDirtyQueue(filePath);
+
+    console.log(`Merkle root updated: ${state.root} -> ${tree.hash}`);
+    return tree.hash;
+}
+```
+
+When a file changes, this method loads the current Merkle state, computes the new file hash, and checks if it actually changed. If unchanged, it returns early. Otherwise, it updates the leaf, rebuilds the entire tree (since parent hashes must change), saves the new state, and adds the file to the dirty queue.
+
+### Step 6: Local Storage
+
+[merkle-tree.ts:201-220](../../Merkle-Tree-Builder/src/merkle-tree.ts#L201-L220)
+
+```typescript
+saveMerkleState(state: MerkleState): void {
+    fs.writeFileSync(this.merkleStatePath, JSON.stringify(state, null, 2));
+}
+
+loadMerkleState(): MerkleState | null {
+    try {
+        if (!fs.existsSync(this.merkleStatePath)) {
+            return null;
         }
-        this.fileChunks.delete(filePath);
-        this.fileHashes.delete(filePath);
+        const data = fs.readFileSync(this.merkleStatePath, 'utf8');
+        return JSON.parse(data);
+    } catch (err) {
+        console.error('Failed to load merkle state:', err);
+        return null;
     }
+}
+```
 
-    /**
-     * Get chunks for a specific file
-     * Matches puku-vs-editor's getChunksForFile()
-     * @param {string} filePath - File path
-     * @returns {HashedChunk[]}
-     */
-    getChunksForFile(filePath) {
-        const chunkMap = this.fileChunks.get(filePath);
-        if (!chunkMap) {
-            return [];
+The Merkle state is persisted to `.puku/merkle-state.json`. This file contains the root hash and all leaf hashes. When the application restarts, it loads this state instead of rebuilding from scratch.
+
+**Example merkle-state.json:**
+```json
+{
+  "root": "03330b979ef108890a1ec76d88bc4e25ffb7a6b18f400269544539edbd63f6aa",
+  "leaves": [
+    { "filePath": "test-project\\src\\api.ts", "hash": "5b7718d7..." },
+    { "filePath": "test-project\\src\\auth.ts", "hash": "5f8dbcfb..." }
+  ],
+  "timestamp": "2024-01-15T10:30:00.000Z"
+}
+```
+
+### Step 7: Dirty Queue Management
+
+[merkle-tree.ts:222-256](../../Merkle-Tree-Builder/src/merkle-tree.ts#L222-L256)
+
+```typescript
+addToDirtyQueue(filePath: string): void {
+    let queue: DirtyQueue;
+
+    try {
+        if (fs.existsSync(this.dirtyQueuePath)) {
+            const data = fs.readFileSync(this.dirtyQueuePath, 'utf8');
+            queue = JSON.parse(data);
+        } else {
+            queue = {
+                lastSync: new Date().toISOString(),
+                dirtyFiles: [],
+            };
         }
-        return Array.from(chunkMap.values());
-    }
-
-    /**
-     * Get statistics about the registry
-     */
-    getStats() {
-        let totalChunks = 0;
-        for (const [, chunkMap] of this.fileChunks) {
-            totalChunks += chunkMap.size;
-        }
-
-        return {
-            fileCount: this.fileChunks.size,
-            totalChunks: totalChunks,
-            uniqueHashes: this.hashIndex.size,
+    } catch (err) {
+        queue = {
+            lastSync: new Date().toISOString(),
+            dirtyFiles: [],
         };
     }
 
-    /**
-     * Check if a chunk hash exists (for deduplication)
-     * @param {string} contentHash - Chunk content hash
-     * @returns {boolean}
-     */
-    hasHash(contentHash) {
-        return this.hashIndex.has(contentHash);
+    // Add to queue if not already present
+    if (!queue.dirtyFiles.includes(filePath)) {
+        queue.dirtyFiles.push(filePath);
     }
 
-    /**
-     * Get chunk by hash
-     * @param {string} contentHash - Chunk content hash
-     * @returns {HashedChunk | undefined}
-     */
-    getByHash(contentHash) {
-        return this.hashIndex.get(contentHash);
-    }
+    fs.writeFileSync(this.dirtyQueuePath, JSON.stringify(queue, null, 2));
 }
-
-module.exports = { HashRegistry };
 ```
 
-### Step 4: Example Usage
+The dirty queue tracks which files have changed since the last server sync. This allows batching changes for efficient syncing. When a file changes, it's added to the queue. During sync, the server processes only these dirty files.
 
-Create `src/example.js`:
-
-```javascript
-const { SemanticChunker } = require('./chunker');
-const { ChunkHasher } = require('./chunk-hasher');
-const { HashRegistry } = require('./hash-registry');
-
-async function main() {
-    // Initialize chunker (from previous lab)
-    const chunker = new SemanticChunker({
-        maxChunkSize: 4000,
-        minChunkSize: 50,
-    });
-
-    await chunker.initialize({
-        javascript: require.resolve('tree-sitter-javascript/tree-sitter-javascript.wasm'),
-        python: require.resolve('tree-sitter-python/tree-sitter-python.wasm'),
-    });
-
-    // Initialize hasher (uses MD5 like puku-vs-editor)
-    const hasher = new ChunkHasher();
-    await hasher.initialize();
-
-    // Initialize registry
-    const registry = new HashRegistry();
-
-    // === INITIAL INDEXING ===
-    console.log('=== Initial Indexing ===\n');
-
-    const originalCode = `
-/**
- * User management module
- */
-import { db } from './database';
-
-async function getUser(id) {
-    return await db.users.findById(id);
+**Example dirty-queue.json:**
+```json
+{
+  "lastSync": "2024-01-15T10:30:00.000Z",
+  "dirtyFiles": [
+    "test-project\\src\\auth.ts",
+    "test-project\\src\\database.ts"
+  ]
 }
+```
 
-class UserService {
-    constructor(database) {
-        this.db = database;
-    }
+### Step 8: Watcher Integration
 
-    async create(userData) {
-        const user = new User(userData);
-        await this.db.users.insert(user);
-        return user;
-    }
+[watcher.ts:88-140](../../Merkle-Tree-Builder/src/watcher.ts#L88-L140)
 
-    async update(id, changes) {
-        return await this.db.users.update(id, changes);
-    }
-}
-
-export { getUser, UserService };
-    `.trim();
-
-    const filePath = 'src/user-service.js';
-
-    // Chunk and hash
-    const chunks = chunker.chunk(originalCode, 'javascript');
-    const hashedChunks = hasher.hashChunks(chunks, filePath);
-    const fileHash = hasher.hashFile(originalCode);
-
-    // Register in registry
-    registry.registerFile(filePath, hashedChunks, fileHash);
-
-    console.log('Initial chunks:');
-    hashedChunks.forEach((chunk, i) => {
-        console.log(`  ${i + 1}. ${chunk.toString()}`);
-    });
-    console.log(`\nFile hash: ${fileHash.substring(0, 16)}...`);
-    console.log(`Registry stats:`, registry.getStats());
-
-    // === SIMULATE FILE CHANGE ===
-    console.log('\n\n=== Simulating File Change ===\n');
-
-    // Modified code: changed getUser function, added new function
-    const modifiedCode = `
-/**
- * User management module
- */
-import { db } from './database';
-
-async function getUser(id) {
-    // Added retry logic
-    for (let i = 0; i < 3; i++) {
-        try {
-            return await db.users.findById(id);
-        } catch (err) {
-            if (i === 2) throw err;
-        }
-    }
-}
-
-async function deleteUser(id) {
-    return await db.users.remove(id);
-}
-
-class UserService {
-    constructor(database) {
-        this.db = database;
-    }
-
-    async create(userData) {
-        const user = new User(userData);
-        await this.db.users.insert(user);
-        return user;
-    }
-
-    async update(id, changes) {
-        return await this.db.users.update(id, changes);
-    }
-}
-
-export { getUser, deleteUser, UserService };
-    `.trim();
-
-    // Check if file changed
-    const newFileHash = hasher.hashFile(modifiedCode);
-    const fileChanged = registry.hasFileChanged(filePath, newFileHash);
-
-    console.log(`File changed: ${fileChanged}`);
-
-    if (fileChanged) {
-        // Re-chunk and hash
-        const newChunks = chunker.chunk(modifiedCode, 'javascript');
-        const newHashedChunks = hasher.hashChunks(newChunks, filePath);
-
-        // Compare with old chunks
-        const diff = registry.compareChunks(filePath, newHashedChunks);
-
-        console.log('\nChange Detection Results:');
-        console.log(`  Added: ${diff.added.length} chunks`);
-        diff.added.forEach(c => console.log(`    + ${c.name || c.type} (${c.contentHash.substring(0, 8)})`));
-
-        console.log(`  Modified: ${diff.modified.length} chunks`);
-        diff.modified.forEach(c => console.log(`    ~ ${c.name || c.type} (${c.contentHash.substring(0, 8)})`));
-
-        console.log(`  Unchanged: ${diff.unchanged.length} chunks`);
-        diff.unchanged.forEach(c => console.log(`    = ${c.name || c.type} (${c.contentHash.substring(0, 8)})`));
-
-        console.log(`  Removed: ${diff.removed.length} chunks`);
-        diff.removed.forEach(c => console.log(`    - ${c.name || c.type} (${c.contentHash.substring(0, 8)})`));
-
-        // Only these chunks need re-embedding:
-        const chunksToEmbed = [...diff.added, ...diff.modified];
-        console.log(`\nChunks requiring re-embedding: ${chunksToEmbed.length}`);
-
-        // Update registry
-        registry.updateFile(filePath, newHashedChunks, newFileHash);
-        console.log('Registry updated.');
-        console.log('New registry stats:', registry.getStats());
-    }
-
-    // === PYTHON EXAMPLE ===
-    console.log('\n\n=== Python Example ===\n');
-
-    const pythonCode = `
-"""Authentication module"""
-from hashlib import sha256
-
-def hash_password(password: str) -> str:
-    """Hash a password using SHA-256."""
-    return sha256(password.encode()).hexdigest()
-
-def verify_password(password: str, hashed: str) -> bool:
-    """Verify a password against its hash."""
-    return hash_password(password) == hashed
-
-class Authenticator:
-    def __init__(self, user_store):
-        self.users = user_store
-
-    def login(self, username: str, password: str):
-        user = self.users.get(username)
-        if not user:
-            raise ValueError("User not found")
-        if not verify_password(password, user.password_hash):
-            raise ValueError("Invalid password")
-        return self._generate_token(user)
-
-    def _generate_token(self, user) -> str:
-        import secrets
-        return secrets.token_urlsafe(32)
-    `.trim();
-
-    const pyFilePath = 'src/auth.py';
-    const pyChunks = chunker.chunk(pythonCode, 'python');
-    const pyHashedChunks = hasher.hashChunks(pyChunks, pyFilePath);
-    const pyFileHash = hasher.hashFile(pythonCode);
-
-    registry.registerFile(pyFilePath, pyHashedChunks, pyFileHash);
-
-    console.log('Python chunks:');
-    pyHashedChunks.forEach((chunk, i) => {
-        console.log(`  ${i + 1}. [${chunk.type}] ${chunk.name || '(anonymous)'}`);
-        console.log(`     Hash: ${chunk.contentHash.substring(0, 16)}...`);
-        console.log(`     Lines: ${chunk.lineStart}-${chunk.lineEnd}`);
-    });
-
-    console.log('\nFinal registry stats:', registry.getStats());
-
-    // === DEMONSTRATE isIndexed() CHECK ===
-    console.log('\n\n=== Checking isIndexed (puku-vs-editor pattern) ===\n');
-
-    // This pattern matches puku-vs-editor's cache check
-    const testPath = 'src/user-service.js';
-    const testContent = modifiedCode;
-    const testHash = hasher.hashFile(testContent);
-
-    if (registry.isIndexed(testPath, testHash)) {
-        console.log(`File ${testPath} is already indexed with same content - skip re-indexing`);
+```typescript
+async start(): Promise<this> {
+    // Build initial tree if not exists
+    const state = this.merkleBuilder.loadMerkleState();
+    if (!state) {
+        await this.buildInitialTree();
     } else {
-        console.log(`File ${testPath} needs re-indexing (content changed or new file)`);
+        console.log(`Loaded existing Merkle state. Root: ${state.root.substring(0, 16)}...`);
     }
+
+    console.log(`\nWatching directory: ${this.watchPath}`);
+
+    // Subscribe to file system events
+    this.subscription = await parcelWatcher.subscribe(
+        this.watchPath,
+        (err: Error | null, events: parcelWatcher.Event[]) => {
+            if (err) {
+                this.onError(err);
+                return;
+            }
+
+            for (const event of events) {
+                const filePath = event.path;
+
+                // Filter
+                if (!this._shouldWatch(filePath) || this._shouldIgnore(filePath)) {
+                    continue;
+                }
+
+                if (event.type === 'create' || event.type === 'update') {
+                    // File created or modified
+                    console.log(`\n[${event.type.toUpperCase()}] ${filePath}`);
+
+                    const newRoot = this.merkleBuilder.updateFileHash(filePath);
+                    if (newRoot) {
+                        this.onFileChanged(filePath, newRoot);
+                    }
+                } else if (event.type === 'delete') {
+                    console.log(`\n[DELETE] ${filePath}`);
+                    // For simplicity, we'll trigger a full rebuild on delete
+                    console.log('File deletion detected. Consider rebuilding tree.');
+                }
+            }
+        }
+    );
+
+    this.onReady();
+    return this;
 }
-
-main().catch(console.error);
 ```
 
-### Step 5: Copy Chunker from Previous Lab
+The watcher integrates the file watcher from Lab-05 with the Merkle tree builder. When a file changes, it recomputes the hash, updates the tree, and fires callbacks. This creates a complete change detection pipeline: file save → watcher event → hash update → Merkle root update → dirty queue update.
 
-Copy the chunker files from the Semantic-chunking-with-AST project:
+## Part 5: Running the Demo
+
+### Build and Run
 
 ```bash
-# Copy from previous lab
-cp ../Semantic-chunking-with-AST/src/semantic-nodes.js src/
-cp ../Semantic-chunking-with-AST/src/chunk.js src/
-cp ../Semantic-chunking-with-AST/src/chunker.js src/
+npm run build
+npm start
 ```
 
-## Part 5: Running the Example
+### Expected Output
+
+```
+=== Merkle Tree Builder Demo ===
+
+Building initial Merkle tree for: ./test-project
+Merkle root: 03330b979ef108890a1ec76d88bc4e25ffb7a6b18f400269544539edbd63f6aa
+
+Tree structure:
+[NODE] 03330b97
+  [NODE] b16d7e6f
+    [NODE] ab61bfc2
+      [NODE] 05cb0a28
+        [LEAF] 5b7718d7 - test-project\src\api.ts
+        [LEAF] 5f8dbcfb - test-project\src\auth.ts
+      [NODE] 38b7e777
+        [LEAF] 37b7e566 - test-project\src\cache.ts
+        [LEAF] 6412f165 - test-project\src\config.ts
+    [NODE] ed9f4eb5
+      [NODE] 724270ad
+        [LEAF] 554c86c9 - test-project\src\database.ts
+        [LEAF] ec10b8fc - test-project\src\logger.ts
+      [NODE] 9b107991
+        [LEAF] 5548076c - test-project\src\validator.ts
+        [LEAF] d1beee1c - test-project\utils\date.ts
+  [NODE] 4c4e7885
+    [LEAF] a6633d52 - test-project\utils\helpers.ts
+    [LEAF] e8a7142b - test-project\utils\string.ts
+
+Watching directory: ./test-project
+
+✓ Watcher ready. Monitoring for changes...
+
+Try editing a file in test-project/ to see the Merkle tree update!
+Press Ctrl+C to stop.
+```
+
+### Test File Change
+
+Open [test-project/src/auth.ts](../../Merkle-Tree-Builder/test-project/src/auth.ts) and add a comment:
+
+```typescript
+// This is a test comment
+export function login(username: string, password: string): User | null {
+    // ...
+}
+```
+
+Save the file. The watcher will detect the change:
+
+```
+[UPDATE] test-project\src\auth.ts
+Merkle root updated: 03330b97... -> c8d9f2a5...
+
+✓ Merkle tree updated!
+  File: test-project\src\auth.ts
+  New root: c8d9f2a5e1f3b8a4...
+
+  Dirty queue: 1 file(s)
+```
+
+The root hash changed because the file content changed!
+
+### Verify Local Storage
+
+Check `.puku/` directory:
 
 ```bash
-cd chunk-hashing
-npm install
-node src/example.js
+cat .puku/merkle-state.json
+cat .puku/dirty-queue.json
 ```
 
-**Expected Output**:
+You'll see the updated root hash and the dirty file in the queue.
 
-```
-=== Initial Indexing ===
+## Part 6: Key Concepts
 
-Initial chunks:
-  1. [block] (anonymous) @ src/user-service.js:1-4 (a1b2c3d4...)
-  2. [function] getUser @ src/user-service.js:6-8 (e5f6g7h8...)
-  3. [class] UserService @ src/user-service.js:10-24 (i9j0k1l2...)
-  4. [block] (anonymous) @ src/user-service.js:26-26 (m3n4o5p6...)
+### Merkle Root Comparison
 
-File hash: 7f8a9b0c1d2e3f4g...
-Registry stats: { fileCount: 1, totalChunks: 4, uniqueHashes: 4 }
+The power of Merkle trees lies in O(1) change detection:
 
+```typescript
+// Client
+const clientRoot = merkleBuilder.loadMerkleState().root;
 
-=== Simulating File Change ===
+// Server (hypothetical)
+const serverRoot = await fetchServerMerkleRoot();
 
-File changed: true
-
-Change Detection Results:
-  Added: 1 chunks
-    + deleteUser (q7r8s9t0)
-  Modified: 1 chunks
-    ~ getUser (u1v2w3x4)
-  Unchanged: 2 chunks
-    = UserService (i9j0k1l2)
-    = block (a1b2c3d4)
-  Removed: 0 chunks
-
-Chunks requiring re-embedding: 2
-Registry updated.
-New registry stats: { fileCount: 1, totalChunks: 5, uniqueHashes: 5 }
+if (clientRoot === serverRoot) {
+    console.log('Nothing changed - skip sync');
+} else {
+    console.log('Changes detected - process dirty queue');
+    const dirtyFiles = merkleBuilder.getDirtyQueue().dirtyFiles;
+    // Send only dirty files to server
+}
 ```
 
-## Summary
+This single comparison tells you if ANY of the thousands of files changed.
 
-In this lab, you learned:
+### Why Include File Path in Hash?
 
-| Concept | Description |
-|---------|-------------|
-| **Content Hashing** | Converting chunk content to fixed-length MD5 hash |
-| **MD5 vs SHA-256** | MD5 for fast change detection, SHA-256 for Merkle tree integrity |
-| **isIndexed Pattern** | Check if file already indexed before re-processing (puku-vs-editor pattern) |
-| **Hash Registry** | Storing and comparing hashes for change detection |
-| **Change Categories** | Added, Modified, Unchanged, Removed chunks |
+```typescript
+// Without path
+hash('function login() {}') = 'abc123'
 
-### Key Takeaways
+// Two different files with same content produce same hash
+// src/auth.ts → 'abc123'
+// test/auth.ts → 'abc123'  ❌ Problem!
 
-1. **Hash chunks, not just files** - Enables fine-grained change detection
-2. **MD5 for content hashing** - Fast, compatible with puku-vs-editor
-3. **SHA-256 for Merkle tree** - Use for cryptographic integrity in upcoming labs
-4. **isIndexed() pattern** - Skip re-indexing files that haven't changed
-5. **Registry pattern** - Store hashes for efficient comparison
-
-### How This Aligns with Cursor's Approach
-
-```
-┌─────────────────────────────────────────────────────────────────┐
-│                    CHANGE DETECTION FLOW                         │
-├─────────────────────────────────────────────────────────────────┤
-│                                                                  │
-│  1. File Watcher detects change                                  │
-│                    │                                             │
-│                    ▼                                             │
-│  2. MD5 hash file content ◄── Lab 06 (this lab)                  │
-│                    │                                             │
-│                    ▼                                             │
-│  3. isIndexed(path, hash)?                                       │
-│          │                                                       │
-│     ┌────┴────┐                                                  │
-│     │ YES     │ NO                                               │
-│     │         ▼                                                  │
-│     │    Re-chunk file                                           │
-│     │         │                                                  │
-│     │         ▼                                                  │
-│     │    Compare chunk hashes                                    │
-│     │         │                                                  │
-│     │         ▼                                                  │
-│     │    Re-embed only changed chunks                            │
-│     │         │                                                  │
-│     ▼         ▼                                                  │
-│    SKIP    Update registry + Merkle tree                         │
-│                                                                  │
-└─────────────────────────────────────────────────────────────────┘
+// With path
+hash('src/auth.ts' + 'function login() {}') = 'def456'
+hash('test/auth.ts' + 'function login() {}') = 'ghi789'  ✓ Unique
 ```
 
-## What's Next
+Including the path ensures location matters—identical code in different files is tracked separately.
 
-In upcoming labs, you'll use chunk hashing to:
+### Binary Tree Structure
 
-- **Lab 07: Merkle Tree** - Build file-level Merkle trees using SHA-256 hashes
-- **Lab 08: Client-Server Sync** - Sync Merkle trees between client and server (like Cursor)
-- **Lab 09: Selective Re-indexing** - Only re-embed chunks that actually changed
+With 10 files, the tree has 4 levels:
+
+```
+Level 3 (Root):      1 node
+Level 2:             2 nodes
+Level 1:             5 nodes
+Level 0 (Leaves):   10 nodes
+```
+
+To update one file, you only recompute:
+- 1 leaf hash (the changed file)
+- ~3-4 parent hashes (path to root)
+
+Instead of recomputing all 10 file hashes!
+
+## Part 7: Theory Summary
+
+### What Makes Merkle Trees Special?
+
+Merkle Trees are unique because they provide **efficient verification** without requiring the entire dataset. This is achieved through three key properties:
+
+1. **Compact Representation**: A single hash (Merkle Root) represents the entire dataset
+2. **Change Propagation**: Any change in a leaf propagates up to the root
+3. **Logarithmic Verification**: Verify data integrity in O(log n) time instead of O(n)
+
+### Mathematical Efficiency
+
+For a codebase with **1,000 files**:
+
+**Without Merkle Tree:**
+- Compare 1,000 file hashes individually: **O(n) = 1,000 operations**
+- Network transfer: ~64KB (1,000 × 64 bytes per hash)
+
+**With Merkle Tree:**
+- Compare 1 root hash: **O(1) = 1 operation**
+- Network transfer: ~64 bytes (single hash)
+- If changed: Only process dirty files (e.g., 3 files instead of 1,000)
+
+**Efficiency gain: 1000x reduction in comparisons, 1000x reduction in data transfer**
+
+### Why Hash the File Path + Content?
+
+This design decision prevents hash collisions for identical code in different locations:
+
+```typescript
+// Problem: Without path hashing
+utils.js → hash("export function log() {}") → abc123...
+test.js  → hash("export function log() {}") → abc123...  ❌ Same hash!
+
+// Solution: With path hashing
+utils.js → hash("utils.js" + "export function log() {}") → abc123...
+test.js  → hash("test.js" + "export function log() {}")  → def456...  ✓ Unique!
+```
+
+This ensures that:
+1. Files are tracked by both **location** and **content**
+2. Moving a file results in a different hash (location changed)
+3. Identical utilities in different files have unique identities
+
+### The Dirty Queue Pattern
+
+The dirty queue is a critical optimization that enables **batched syncing**:
+
+```
+User Activity          Dirty Queue          Server Sync
+─────────────         ──────────────        ─────────────
+Save auth.ts    →    [auth.ts]              (waiting...)
+Save config.ts  →    [auth.ts, config.ts]   (waiting...)
+Save api.ts     →    [auth.ts, config.ts,   (waiting...)
+                      api.ts]
+[10 min timer]  →    Process queue     →    Sync 3 files
+                     Clear queue             (not 1000!)
+```
+
+This pattern:
+- Reduces server load by **100x** (sync every 10 min vs every save)
+- Batches multiple changes efficiently
+- Persists across app restarts (`.puku/dirty-queue.json`)
+
+### Merkle Trees in Production Systems
+
+**Git**:
+- Every commit is a Merkle tree node
+- The commit hash depends on file content + tree structure
+- Enables fast `git status` and diff operations
+
+**Blockchain**:
+- Blocks contain Merkle trees of transactions
+- Enables SPV (Simplified Payment Verification)
+- Verify a transaction without downloading entire blockchain
+
+**VS Code / Cursor**:
+- Merkle root comparison before syncing code index
+- Skip expensive re-indexing when nothing changed
+- Dirty queue for incremental updates
+
+**Build Systems (Bazel, Nx)**:
+- Cache build artifacts using Merkle trees
+- Detect if rebuild is needed in O(1)
+- Share build caches across teams
+
+### Complexity Analysis
+
+| Operation | Without Merkle Tree | With Merkle Tree |
+|-----------|-------------------|-----------------|
+| **Initial Build** | O(n) hash all files | O(n) hash all files + O(n) build tree |
+| **Change Detection** | O(n) compare all hashes | O(1) compare root hash |
+| **Update After Change** | O(n) rehash all | O(log n) update path to root |
+| **Space Complexity** | O(n) store file hashes | O(n) store tree nodes |
+
+The **O(1) change detection** is the killer feature—it makes the overhead of building the tree worthwhile.
+
+### When to Use Merkle Trees
+
+**Good use cases:**
+- Large datasets where most data doesn't change (code, files, databases)
+- Need to detect "did anything change?" efficiently
+- Distributed systems needing consistency verification
+- Caching systems with invalidation
+
+**Not suitable for:**
+- Small datasets (< 10 items) - overhead not worth it
+- Data that changes frequently and completely
+- When you need to know exactly what changed (you still need the dirty queue)
+
+## Conclusion
+
+You've built a production-grade Merkle tree for efficient change detection. By hashing files and building a binary tree structure, you can detect changes across thousands of files with a single root hash comparison—an **O(1) operation** that provides a **1000x efficiency improvement** over naive approaches.
+
+The integration with the file watcher from Lab-05 creates a complete pipeline: when a user saves a file, the watcher detects it, computes the hash, updates the Merkle tree, and stores the new root along with the dirty queue in local storage.
+
+This architecture is used by:
+- **Git** for commit verification
+- **Blockchain** for data integrity
+- **VS Code and Cursor** for code indexing
+- **Bazel and Nx** for build caching
+
+The Merkle root comparison is the gateway to the next step—comparing chunk hashes to identify exactly which code chunks need re-embedding. With this foundation, you can now build incremental indexing systems that handle large codebases efficiently, just like the professional IDEs used by millions of developers.
