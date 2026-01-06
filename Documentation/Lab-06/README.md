@@ -40,30 +40,12 @@ With a Merkle tree:
 
 A **Merkle Tree** is a data structure used primarily in computer science and cryptography to efficiently and securely verify the integrity and consistency of large datasets. It is a binary tree where the leaves store cryptographic hashes of data blocks, and each non-leaf node contains a hash of its child nodes.
 
-![Merkle Tree Structure](./images/image-4.png)
+![Merkle Tree Structure](./images/infra-3.svg)
 
 A Merkle tree is a binary tree where:
 - **Leaf nodes** contain hashes of individual files (or data blocks)
 - **Parent nodes** contain hashes of their children's hashes combined
 - **Root node** (Merkle Root) represents a fingerprint of the entire tree
-
-```mermaid
-graph TB
-    Root[Root Hash: ab61bfc2]
-    P1[Parent: 05cb0a28]
-    P2[Parent: 38b7e777]
-    L1[Leaf: auth.ts<br/>5f8dbcfb]
-    L2[Leaf: database.ts<br/>554c86c9]
-    L3[Leaf: api.ts<br/>5b7718d7]
-    L4[Leaf: config.ts<br/>37b7e566]
-
-    Root --> P1
-    Root --> P2
-    P1 --> L1
-    P1 --> L2
-    P2 --> L3
-    P2 --> L4
-```
 
 If ANY leaf changes, all parent hashes up to the root change. This makes change detection extremely efficient.
 
@@ -112,6 +94,7 @@ graph TB
     I --> J[Save to .puku/]
 ```
 
+
 ### Real-World Usage
 
 Merkle trees are used everywhere:
@@ -131,16 +114,6 @@ To construct a Merkle Tree, we follow these fundamental steps:
 3. Pair the hashes and compute the hash of each pair to form the next level of the tree
 4. Repeat until a single hash (Merkle Root) remains
 
-**Example with our code files:**
-
-```
-Data Blocks: auth.ts, database.ts, api.ts, config.ts
-Leaf Hashes: H1 = hash(auth.ts), H2 = hash(database.ts),
-             H3 = hash(api.ts), H4 = hash(config.ts)
-Parent Hashes: H12 = hash(H1 + H2), H34 = hash(H3 + H4)
-Merkle Root: HR = hash(H12 + H34)
-```
-
 ### Merkle Tree Construction Algorithm
 
 The algorithm constructs a Merkle Tree from a list of data blocks using a cryptographic hash function (SHA-256). Here's the detailed process:
@@ -149,7 +122,7 @@ The algorithm constructs a Merkle Tree from a list of data blocks using a crypto
 
 Start with a list of files (or data blocks) in your project. Ensure the files are in a consistent format for hashing.
 
-![Prepare Data Blocks](./images/image-5.png)
+![Prepare Data Blocks](./images/infra-1.svg)
 
 In our implementation, we scan the directory and collect all source files (.js, .ts, .tsx, .jsx) while skipping ignored directories (node_modules, .git, dist, .puku).
 
@@ -157,7 +130,7 @@ In our implementation, we scan the directory and collect all source files (.js, 
 
 Compute the cryptographic hash (SHA-256) of each file to create the **leaf nodes** of the tree. Store these hashes in a list.
 
-![Hash Data Blocks](./images/image-6.png)
+![Hash Data Blocks](./images/infra-2.svg)
 
 **Our implementation:**
 ```typescript
@@ -170,57 +143,35 @@ config.ts   → SHA-256(path + content) → 37b7e566...
 
 Including the file path in the hash ensures that identical files in different locations have unique hashes.
 
-#### Step 3: Handle Odd Number of Hashes
-
-If the number of leaf hashes is odd, we promote the last hash to the next level (or duplicate it if needed to maintain the binary structure).
-
-#### Step 4: Build the Tree Bottom-Up
+#### Step 3: Build the Tree Bottom-Up
 
 Pair the leaf hashes and compute the hash of each pair to form the **parent nodes**. Repeat this process, creating higher levels of the tree by hashing pairs of nodes, until a single hash remains: the **Merkle Root**.
 
-![Build Tree Bottom-Up](./images/image-7.png)
+![Build Tree Bottom-Up](./images/infra-3.svg)
 
-**Example pairing:**
-```
-Level 0 (Leaves):
-[5f8dbcfb] [554c86c9] [5b7718d7] [37b7e566]
+As shown in the diagram above, the four files (auth.ts, config.ts, database.ts, api.ts) are first hashed individually to create leaf nodes (h1, h2, h3, h4). These leaves are then paired: h1 and h2 are combined to create parent hash h12, while h3 and h4 create parent hash h34. Finally, these two parent hashes are combined to produce the Merkle root h1234. This hierarchical structure ensures that any change to a single file propagates through its parent nodes all the way up to the root, making change detection extremely efficient.
 
-Level 1 (Pairs):
-[05cb0a28] = hash(5f8dbcfb + 554c86c9)
-[38b7e777] = hash(5b7718d7 + 37b7e566)
+#### Step 4: Handle Odd Number of Hashes
 
-Level 2 (Root):
-[ab61bfc2] = hash(05cb0a28 + 38b7e777)
-```
+If the number of leaf hashes is odd, we promote the last hash to the next level (or duplicate it if needed to maintain the binary structure).
 
-The root hash `ab61bfc2...` represents the entire tree.
+![Handle Odd Number of Hashes](./images/infra-4.svg)
+
 
 #### Step 5: Output the Merkle Root
 
 The Merkle Root is a single hash that summarizes all the data blocks. We store the entire tree state (root and leaves) in `.puku/merkle-state.json` for future comparisons.
 
-![Merkle Root Output](./images/image-8.png)
 
 ### Recomputing on File Change
 
-When a file changes, we don't rebuild the entire tree from scratch. Instead:
+When a file changes, we don't rebuild the entire tree from scratch. Instead, we use an efficient incremental update strategy that only recomputes the affected path from the changed leaf to the root.
 
-**When `auth.ts` changes:**
+![Recomputing on File Change](./images/infra-5.svg)
 
-```
-Old hash: 5f8dbcfb...
-New hash: 9a2c1d4e...
-              ↓
-Update affected leaf and rebuild affected parents:
-Level 0: [9a2c1d4e] [554c86c9] [5b7718d7] [37b7e566]
-              ↓
-Level 1: [7f3e8a12] = hash(9a2c1d4e + 554c86c9)  ← Changed!
-         [38b7e777] = hash(5b7718d7 + 37b7e566)  ← Unchanged
-              ↓
-Level 2: [c8d9f2a5] = hash(7f3e8a12 + 38b7e777)  ← New root!
-```
+The diagram above illustrates what happens when `auth.ts` is modified. The changed file (shown in red) causes its leaf hash h1 to change. This change propagates upward: the parent hash h12 must be recomputed because one of its children (h1) changed. The parent hash h34 remains unchanged (shown in blue) because neither h3 nor h4 were modified. Finally, the root hash h1234 must be recomputed because h12 changed.
 
-The new root `c8d9f2a5...` proves something changed. We only recomputed 3 hashes (1 leaf + 2 parents) instead of rehashing all 4 files!
+This demonstrates the key efficiency of Merkle trees: when auth.ts changes, we only recompute 3 hashes (1 leaf + 2 parents) instead of rehashing all 4 files. The unchanged portions of the tree (h2, h3, h4, and h34) are reused without any recomputation, making the update operation O(log n) instead of O(n).
 
 ### Algorithm Pseudocode
 
@@ -253,6 +204,8 @@ function buildMerkleTree(dataBlocks):
     return currentLevel[0]
 ```
 
+The algorithm works in three phases. First, it creates leaf hashes by iterating through all data blocks and computing SHA-256 hashes that combine each file's path with its content. Second, it builds the tree iteratively from bottom to top—starting with the leaf hashes as the current level, it repeatedly pairs adjacent hashes (stepping by 2), computes their parent hash, and moves up a level. This continues until only one hash remains. If an odd number of hashes exists at any level, the unpaired hash is promoted directly to the next level. Finally, when the loop exits, the current level contains exactly one hash—the Merkle root—which is returned as the fingerprint of the entire dataset.
+
 ### Edge Cases
 
 1. **Empty Input**: Return null or error
@@ -260,6 +213,11 @@ function buildMerkleTree(dataBlocks):
 3. **Odd Number of Files**: Promote the last hash to the next level
 
 ## Part 3: Project Setup
+
+First clone the repository:
+```bash
+git clone https://github.com/poridhioss/indexing-system-poc.git
+```
 
 Navigate to the Merkle-Tree-Builder project:
 

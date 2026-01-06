@@ -5,7 +5,8 @@ export interface User {
 }
 
 export function login(username: string, password: string): User | null {
-    // Simulate authentication
+    // Simulate authentication process
+    //Hello world
     if (username && password) {
         return {
             id: '1',
