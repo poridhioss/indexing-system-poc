@@ -608,40 +608,7 @@ npm start
 
 ### Expected Output
 
-```
-=== Merkle Tree Builder Demo ===
-
-Building initial Merkle tree for: ./test-project
-Merkle root: 03330b979ef108890a1ec76d88bc4e25ffb7a6b18f400269544539edbd63f6aa
-
-Tree structure:
-[NODE] 03330b97
-  [NODE] b16d7e6f
-    [NODE] ab61bfc2
-      [NODE] 05cb0a28
-        [LEAF] 5b7718d7 - test-project\src\api.ts
-        [LEAF] 5f8dbcfb - test-project\src\auth.ts
-      [NODE] 38b7e777
-        [LEAF] 37b7e566 - test-project\src\cache.ts
-        [LEAF] 6412f165 - test-project\src\config.ts
-    [NODE] ed9f4eb5
-      [NODE] 724270ad
-        [LEAF] 554c86c9 - test-project\src\database.ts
-        [LEAF] ec10b8fc - test-project\src\logger.ts
-      [NODE] 9b107991
-        [LEAF] 5548076c - test-project\src\validator.ts
-        [LEAF] d1beee1c - test-project\utils\date.ts
-  [NODE] 4c4e7885
-    [LEAF] a6633d52 - test-project\utils\helpers.ts
-    [LEAF] e8a7142b - test-project\utils\string.ts
-
-Watching directory: ./test-project
-
-✓ Watcher ready. Monitoring for changes...
-
-Try editing a file in test-project/ to see the Merkle tree update!
-Press Ctrl+C to stop.
-```
+![Output](./images/image-9.png)
 
 ### Test File Change
 
