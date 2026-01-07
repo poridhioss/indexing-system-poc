@@ -333,7 +333,7 @@ This method builds the Merkle tree iteratively. It starts with leaf nodes (file 
 
 ### Step 4: Scanning Directory
 
-[merkle-tree.ts:106-156](../../Merkle-Tree-Builder/src/merkle-tree.ts#L106-L156)
+[merkle-tree.ts:110-166](../../Merkle-Tree-Builder/src/merkle-tree.ts#L110-L166)
 
 ```typescript
 buildFromDirectory(dirPath: string, extensions: string[] = ['.js', '.ts', '.tsx', '.jsx']): MerkleNode {
@@ -343,7 +343,7 @@ buildFromDirectory(dirPath: string, extensions: string[] = ['.js', '.ts', '.tsx'
         const entries = fs.readdirSync(dir, { withFileTypes: true });
 
         for (const entry of entries) {
-            const fullPath = path.join(dir, entry.name);
+            const fullPath = path.resolve(path.join(dir, entry.name));
 
             // Skip node_modules, .git, etc.
             if (entry.name === 'node_modules' || entry.name === '.git' ||
@@ -358,6 +358,7 @@ buildFromDirectory(dirPath: string, extensions: string[] = ['.js', '.ts', '.tsx'
                 if (extensions.includes(ext)) {
                     const hash = this.hashFile(fullPath);
                     if (hash) {
+                        // Store absolute path directly
                         leaves.push({ filePath: fullPath, hash });
                     }
                 }
@@ -383,38 +384,15 @@ buildFromDirectory(dirPath: string, extensions: string[] = ['.js', '.ts', '.tsx'
 }
 ```
 
-This method performs a recursive directory scan to discover all source files. It filters by extension (only `.js`, `.ts`, etc.) and skips directories like `node_modules` and `.git`. Files are sorted by path for consistency, then the tree is built and saved to disk.
+This method performs a recursive directory scan to discover all source files. It filters by extension (only `.js`, `.ts`, etc.) and skips directories like `node_modules` and `.git`.
 
-### Step 4b: Path Normalization
+**Key implementation detail** (line 117): `path.resolve(path.join(dir, entry.name))` ensures all paths are converted to absolute paths immediately during scanning. This means whether you start the scan with a relative path (`./test-project`) or an absolute path, all stored paths will be absolute.
 
-[merkle-tree.ts:39-49](../../Merkle-Tree-Builder/src/merkle-tree.ts#L39-L49)
-
-```typescript
-private normalizePath(filePath: string): string {
-    // Convert to absolute path first, then make it relative to cwd
-    const absolutePath = path.isAbsolute(filePath) ? filePath : path.resolve(filePath);
-    const relativePath = path.relative(process.cwd(), absolutePath);
-    // Normalize path separators to forward slashes for cross-platform consistency
-    return relativePath.replace(/\\/g, '/');
-}
-```
-
-**Critical for file deletion**: This helper method ensures all file paths are stored consistently as relative paths with forward slashes. Without this, file deletions fail because:
-
-1. The file watcher provides **absolute paths** from the OS (e.g., `/home/user/project/src/auth.ts`)
-2. The merkle state might have **relative paths** (e.g., `test-project/src/auth.ts`)
-3. When `deleteFile()` tries to find the file using `findIndex(l => l.filePath === filePath)`, the comparison fails!
-
-The normalizePath method solves this by:
-- Converting all paths to absolute first (handles both relative and absolute inputs)
-- Making them relative to `process.cwd()` for consistency
-- Normalizing path separators (`\` → `/`) for cross-platform compatibility
-
-This ensures that whether a file path comes from the initial directory scan, a file watcher event, or user input, it's always stored and compared in the same format.
+Files are sorted by path for consistency (alphabetical order ensures the same tree structure across runs), then the tree is built and saved to disk.
 
 ### Step 5: Updating File Hash
 
-[merkle-tree.ts:158-199](../../Merkle-Tree-Builder/src/merkle-tree.ts#L158-L199)
+[merkle-tree.ts:172-216](../../Merkle-Tree-Builder/src/merkle-tree.ts#L172-L216)
 
 ```typescript
 updateFileHash(filePath: string): string | null {
@@ -431,7 +409,7 @@ updateFileHash(filePath: string): string | null {
         return null;
     }
 
-    // Update or add leaf
+    // Update or add leaf (direct path comparison)
     const existingLeaf = state.leaves.find(l => l.filePath === filePath);
     if (existingLeaf) {
         // Check if hash actually changed
@@ -464,29 +442,29 @@ updateFileHash(filePath: string): string | null {
 }
 ```
 
-When a file changes, this method loads the current Merkle state, computes the new file hash, and checks if it actually changed. If unchanged, it returns early—**critically, it does NOT add the file to the dirty queue or trigger callbacks**. This prevents false positives when a file is saved without actual content changes. Otherwise, it updates the leaf, rebuilds the entire tree (since parent hashes must change), saves the new state, and adds the file to the dirty queue.
+When a file changes, this method loads the current Merkle state, computes the new file hash, and checks if it actually changed. If unchanged, it returns early—**critically, it does NOT add the file to the dirty queue or trigger callbacks**. This prevents false positives when a file is saved without actual content changes.
 
-**Important optimization**: At line 428-431, the method detects when a file is saved without content changes. In this case, the old root hash is returned without updating the tree or dirty queue. The watcher then compares the old and new roots before firing the callback, ensuring "Merkle tree updated!" only appears for real changes.
+**Important optimization** (lines 189-192): The method detects when a file is saved without content changes. In this case, the old root hash is returned without updating the tree or dirty queue. The watcher then compares the old and new roots before firing the callback, ensuring "Merkle tree updated!" only appears for real changes.
 
-### Step 5b: Handling File Deletion
+**Direct path comparison** (line 187): Since all paths are absolute, we can use direct string equality (`l.filePath === filePath`) without any normalization logic. This simplifies the code significantly.
 
-[merkle-tree.ts:221-272](../../Merkle-Tree-Builder/src/merkle-tree.ts#L221-L272)
+### Step 6: Handling File Deletion
+
+[merkle-tree.ts:221-266](../../Merkle-Tree-Builder/src/merkle-tree.ts#L221-L266)
 
 ```typescript
 deleteFile(filePath: string): string | null {
-    // Normalize the incoming path for consistent comparison
-    const normalizedPath = this.normalizePath(filePath);
-
+    // Load current state
     const state = this.loadMerkleState();
     if (!state) {
         console.error('No merkle state found. Run initial build first.');
         return null;
     }
 
-    // Find the file in leaves (use normalized path for comparison)
-    const leafIndex = state.leaves.findIndex(l => l.filePath === normalizedPath);
+    // Find the file in leaves (direct path comparison)
+    const leafIndex = state.leaves.findIndex(l => l.filePath === filePath);
     if (leafIndex === -1) {
-        console.log(`File ${normalizedPath} not found in tree`);
+        console.log(`File ${filePath} not found in tree`);
         return state.root; // File wasn't tracked, no change
     }
 
@@ -501,7 +479,7 @@ deleteFile(filePath: string): string | null {
             leaves: [],
             timestamp: new Date().toISOString(),
         });
-        this.addToDirtyQueue(normalizedPath);
+        this.addToDirtyQueue(filePath);
         return '';
     }
 
@@ -523,17 +501,19 @@ deleteFile(filePath: string): string | null {
 }
 ```
 
-This method handles file deletions by removing the corresponding leaf from the tree and recomputing the Merkle root. **Critical fix (line 477-478)**: The incoming filePath is normalized before comparison to ensure the file is found in the leaves array. Without this normalization, file deletions would silently fail when the watcher provides an absolute path but the merkle state contains relative paths.
+This method handles file deletions by removing the corresponding leaf from the tree and recomputing the Merkle root.
+
+**Simplified implementation**: Since all paths are absolute, the method uses direct string comparison (line 230) to find the file in the leaves array. No path normalization is needed—the file watcher provides absolute paths, and our merkle state stores absolute paths, so the comparison just works.
 
 The method then:
-1. Finds the file index using the normalized path (line 487)
-2. Splices the leaf from the array (line 494)
-3. Rebuilds the tree with remaining leaves (line 509)
-4. Saves the new state and adds to dirty queue (lines 512-519)
+1. Finds the file index using direct path comparison (line 230)
+2. Splices the leaf from the array (line 237)
+3. Rebuilds the tree with remaining leaves (line 252)
+4. Saves the new state and adds to dirty queue (lines 255-262)
 
-Edge case: if all files are deleted, the root becomes an empty string (lines 497-506).
+**Edge case** (lines 240-248): If all files are deleted, the root becomes an empty string, representing an empty tree.
 
-### Step 6: Local Storage
+### Step 7: Local Storage
 
 [merkle-tree.ts:201-220](../../Merkle-Tree-Builder/src/merkle-tree.ts#L201-L220)
 
@@ -559,18 +539,12 @@ loadMerkleState(): MerkleState | null {
 The Merkle state is persisted to `.puku/merkle-state.json`. This file contains the root hash and all leaf hashes. When the application restarts, it loads this state instead of rebuilding from scratch.
 
 **Example merkle-state.json:**
-```json
-{
-  "root": "03330b979ef108890a1ec76d88bc4e25ffb7a6b18f400269544539edbd63f6aa",
-  "leaves": [
-    { "filePath": "test-project\\src\\api.ts", "hash": "5b7718d7..." },
-    { "filePath": "test-project\\src\\auth.ts", "hash": "5f8dbcfb..." }
-  ],
-  "timestamp": "2024-01-15T10:30:00.000Z"
-}
-```
 
-### Step 7: Dirty Queue Management
+![](./images/image-11.png)
+
+Note that all paths are **absolute paths**, specific to the user's machine. This is intentional for IDE use cases where each user maintains their own local Merkle tree.
+
+### Step 8: Dirty Queue Management
 
 [merkle-tree.ts:222-256](../../Merkle-Tree-Builder/src/merkle-tree.ts#L222-L256)
 
@@ -606,16 +580,6 @@ addToDirtyQueue(filePath: string): void {
 
 The dirty queue tracks which files have changed since the last server sync. This allows batching changes for efficient syncing. When a file changes, it's added to the queue. During sync, the server processes only these dirty files.
 
-**Example dirty-queue.json:**
-```json
-{
-  "lastSync": "2024-01-15T10:30:00.000Z",
-  "dirtyFiles": [
-    "test-project\\src\\auth.ts",
-    "test-project\\src\\database.ts"
-  ]
-}
-```
 
 ### Step 8: Watcher Integration
 
@@ -681,13 +645,13 @@ async start(): Promise<this> {
 }
 ```
 
-The watcher integrates the file watcher from `File Watcher Lab` with the Merkle tree builder. The implementation includes two critical optimizations:
+The watcher integrates the file watcher from `File Watcher Lab` with the Merkle tree builder. Key integration points:
 
-1. **Root Comparison Before Callback** (lines 619-625, 629-635): Before calling `onFileChanged()`, the watcher captures the old root hash and compares it with the new root. The callback only fires if they differ, preventing false "Merkle tree updated!" messages when files are saved without content changes.
+1. **File Events → Hash Update**: When `@parcel/watcher` detects file changes (create, update, delete), the watcher calls `updateFileHash()` or `deleteFile()` on the merkle builder.
 
-2. **File Deletion Handling** (lines 626-636): When a delete event occurs, the watcher calls `merkleBuilder.deleteFile()` which removes the leaf from the tree, rebuilds it, and returns the new root. The same root comparison logic applies, ensuring callbacks only fire for actual tree changes.
+2. **Root Comparison Optimization**: Before firing callbacks, the watcher compares old and new root hashes. Callbacks only fire if the root actually changed, preventing false updates when files are saved without content changes.
 
-This creates an accurate change detection pipeline: file save → watcher event → hash update → **root comparison** → callback only if changed → dirty queue update.
+This creates the complete pipeline: **file change → watcher event → merkle update → root comparison → callback (if changed) → dirty queue update**.
 
 ## Part 5: Running the Demo
 
@@ -719,6 +683,8 @@ Save the file. The watcher will detect the change:
 
 The root hash changed because the file content changed!
 
+Now try to add and delete a file in the `test-project` directory. You will see the root hash changed and the dirty queue updated.
+
 ### Verify Local Storage
 
 Check `.puku/` directory:
@@ -728,7 +694,7 @@ cat .puku/merkle-state.json
 cat .puku/dirty-queue.json
 ```
 
-You'll see the updated root hash and the dirty file in the queue.
+You'll see the updated root hash.
 
 ## Part 6: Key Concepts
 
@@ -792,43 +758,12 @@ Instead of recomputing all 10 file hashes!
 
 The dirty queue is a critical optimization that enables **batched syncing**:
 
-```
-User Activity          Dirty Queue          Server Sync
-─────────────         ──────────────        ─────────────
-Save auth.ts    →    [auth.ts]              (waiting...)
-Save config.ts  →    [auth.ts, config.ts]   (waiting...)
-Save api.ts     →    [auth.ts, config.ts,   (waiting...)
-                      api.ts]
-[10 min timer]  →    Process queue     →    Sync 3 files
-                     Clear queue             (not 1000!)
-```
+![Dirty Queue Pattern](./images/infra-6.svg)
 
 This pattern:
 - Reduces server load by **100x** (sync every 10 min vs every save)
 - Batches multiple changes efficiently
 - Persists across app restarts (`.puku/dirty-queue.json`)
-
-### Merkle Trees in Production Systems
-
-**Git**:
-- Every commit is a Merkle tree node
-- The commit hash depends on file content + tree structure
-- Enables fast `git status` and diff operations
-
-**Blockchain**:
-- Blocks contain Merkle trees of transactions
-- Enables SPV (Simplified Payment Verification)
-- Verify a transaction without downloading entire blockchain
-
-**VS Code / Cursor**:
-- Merkle root comparison before syncing code index
-- Skip expensive re-indexing when nothing changed
-- Dirty queue for incremental updates
-
-**Build Systems (Bazel, Nx)**:
-- Cache build artifacts using Merkle trees
-- Detect if rebuild is needed in O(1)
-- Share build caches across teams
 
 ### Complexity Analysis
 
@@ -841,29 +776,8 @@ This pattern:
 
 The **O(1) change detection** is the killer feature—it makes the overhead of building the tree worthwhile.
 
-### When to Use Merkle Trees
-
-**Good use cases:**
-- Large datasets where most data doesn't change (code, files, databases)
-- Need to detect "did anything change?" efficiently
-- Distributed systems needing consistency verification
-- Caching systems with invalidation
-
-**Not suitable for:**
-- Small datasets (< 10 items) - overhead not worth it
-- Data that changes frequently and completely
-- When you need to know exactly what changed (you still need the dirty queue)
-
 ## Conclusion
 
-You've built a production-grade Merkle tree for efficient change detection. By hashing files and building a binary tree structure, you can detect changes across thousands of files with a single root hash comparison—an **O(1) operation** that provides a **1000x efficiency improvement** over naive approaches.
+You've built a Merkle tree that enables O(1) change detection—detecting changes across thousands of files with a single root hash comparison. The complete pipeline (file save → watcher → hash update → root comparison → dirty queue) provides 1000x efficiency improvement over naive approaches.
 
-The integration with the file watcher from Lab-05 creates a complete pipeline: when a user saves a file, the watcher detects it, computes the hash, updates the Merkle tree, and stores the new root along with the dirty queue in local storage.
-
-This architecture is used by:
-- **Git** for commit verification
-- **Blockchain** for data integrity
-- **VS Code and Cursor** for code indexing
-- **Bazel and Nx** for build caching
-
-The Merkle root comparison is the gateway to the next step—comparing chunk hashes to identify exactly which code chunks need re-embedding. With this foundation, you can now build incremental indexing systems that handle large codebases efficiently, just like the professional IDEs used by millions of developers.
+This same architecture powers Git commits, Blockchain verification, VS Code/Cursor indexing, and Bazel/Nx build caching. The Merkle root comparison is the gateway to the next step: chunk-level hashing for incremental indexing of large codebases.
