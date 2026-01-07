@@ -77,23 +77,7 @@ The topmost node of the tree, known as the Merkle Root, is a single hash that re
 
 #### 5. Binary Structure
 
-Merkle Trees are typically binary, meaning each parent node has exactly two children. If the number of data blocks is odd, the last hash may be duplicated or promoted to maintain the binary structure.
-
-### Merkle Tree in the Pipeline
-
-```mermaid
-graph TB
-    A[User Saves File] --> B[File Watcher Detects]
-    B --> C[Compute File Hash]
-    C --> D{Hash Changed?}
-    D -->|No| E[Skip - No Change]
-    D -->|Yes| F[Update Leaf in Tree]
-    F --> G[Recompute Parent Hashes]
-    G --> H[Update Merkle Root]
-    H --> I[Add to Dirty Queue]
-    I --> J[Save to .puku/]
-```
-
+Merkle Trees are typically binary, meaning each parent node has exactly two children. If the number of data blocks is odd, the last hash may be duplicated or promoted to maintain the binary structure. 
 
 ### Real-World Usage
 
@@ -454,7 +438,63 @@ updateFileHash(filePath: string): string | null {
 }
 ```
 
-When a file changes, this method loads the current Merkle state, computes the new file hash, and checks if it actually changed. If unchanged, it returns early. Otherwise, it updates the leaf, rebuilds the entire tree (since parent hashes must change), saves the new state, and adds the file to the dirty queue.
+When a file changes, this method loads the current Merkle state, computes the new file hash, and checks if it actually changed. If unchanged, it returns early—**critically, it does NOT add the file to the dirty queue or trigger callbacks**. This prevents false positives when a file is saved without actual content changes. Otherwise, it updates the leaf, rebuilds the entire tree (since parent hashes must change), saves the new state, and adds the file to the dirty queue.
+
+**Important optimization**: At line 428-431, the method detects when a file is saved without content changes. In this case, the old root hash is returned without updating the tree or dirty queue. The watcher then compares the old and new roots before firing the callback, ensuring "Merkle tree updated!" only appears for real changes.
+
+### Step 5b: Handling File Deletion
+
+[merkle-tree.ts:207-252](../../Merkle-Tree-Builder/src/merkle-tree.ts#L207-L252)
+
+```typescript
+deleteFile(filePath: string): string | null {
+    const state = this.loadMerkleState();
+    if (!state) {
+        console.error('No merkle state found. Run initial build first.');
+        return null;
+    }
+
+    // Find the file in leaves
+    const leafIndex = state.leaves.findIndex(l => l.filePath === filePath);
+    if (leafIndex === -1) {
+        console.log(`File ${filePath} not found in tree`);
+        return state.root; // File wasn't tracked, no change
+    }
+
+    // Remove the leaf
+    state.leaves.splice(leafIndex, 1);
+
+    // If no leaves left, return empty string
+    if (state.leaves.length === 0) {
+        console.log('No files left in tree');
+        this.saveMerkleState({
+            root: '',
+            leaves: [],
+            timestamp: new Date().toISOString(),
+        });
+        this.addToDirtyQueue(filePath);
+        return '';
+    }
+
+    // Rebuild tree with remaining leaves
+    const tree = this.buildTree(state.leaves);
+
+    // Save updated state
+    this.saveMerkleState({
+        root: tree.hash,
+        leaves: state.leaves,
+        timestamp: new Date().toISOString(),
+    });
+
+    // Add to dirty queue
+    this.addToDirtyQueue(filePath);
+
+    console.log(`File deleted. Merkle root updated: ${state.root} -> ${tree.hash}`);
+    return tree.hash;
+}
+```
+
+This method handles file deletions by removing the corresponding leaf from the tree and recomputing the Merkle root. Unlike simple updates, deletions require splicing the leaf from the array (line 223), then rebuilding the tree with the remaining leaves. The deleted file is added to the dirty queue so the server knows to remove its chunks from the vector database. Edge case: if all files are deleted, the root becomes an empty string.
 
 ### Step 6: Local Storage
 
@@ -595,7 +635,7 @@ async start(): Promise<this> {
 }
 ```
 
-The watcher integrates the file watcher from Lab-05 with the Merkle tree builder. When a file changes, it recomputes the hash, updates the tree, and fires callbacks. This creates a complete change detection pipeline: file save → watcher event → hash update → Merkle root update → dirty queue update.
+The watcher integrates the file watcher from `File Watcher Lab` with the Merkle tree builder. When a file changes, it recomputes the hash, updates the tree, and fires callbacks. This creates a complete change detection pipeline: file save → watcher event → hash update → Merkle root update → dirty queue update.
 
 ## Part 5: Running the Demo
 
