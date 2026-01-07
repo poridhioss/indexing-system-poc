@@ -202,6 +202,56 @@ export class MerkleTreeBuilder {
     }
 
     /**
+     * Remove file from tree and recompute Merkle root
+     */
+    deleteFile(filePath: string): string | null {
+        // Load current state
+        const state = this.loadMerkleState();
+        if (!state) {
+            console.error('No merkle state found. Run initial build first.');
+            return null;
+        }
+
+        // Find the file in leaves
+        const leafIndex = state.leaves.findIndex(l => l.filePath === filePath);
+        if (leafIndex === -1) {
+            console.log(`File ${filePath} not found in tree`);
+            return state.root; // File wasn't tracked, no change
+        }
+
+        // Remove the leaf
+        state.leaves.splice(leafIndex, 1);
+
+        // If no leaves left, return null
+        if (state.leaves.length === 0) {
+            console.log('No files left in tree');
+            this.saveMerkleState({
+                root: '',
+                leaves: [],
+                timestamp: new Date().toISOString(),
+            });
+            this.addToDirtyQueue(filePath);
+            return '';
+        }
+
+        // Rebuild tree with remaining leaves
+        const tree = this.buildTree(state.leaves);
+
+        // Save updated state
+        this.saveMerkleState({
+            root: tree.hash,
+            leaves: state.leaves,
+            timestamp: new Date().toISOString(),
+        });
+
+        // Add to dirty queue
+        this.addToDirtyQueue(filePath);
+
+        console.log(`File deleted. Merkle root updated: ${state.root} -> ${tree.hash}`);
+        return tree.hash;
+    }
+
+    /**
      * Save Merkle state to disk
      */
     saveMerkleState(state: MerkleState): void {

@@ -116,15 +116,23 @@ export class MerkleWatcher {
                         // File created or modified
                         console.log(`\n[${event.type.toUpperCase()}] ${filePath}`);
 
+                        const oldRoot = this.getCurrentRoot();
                         const newRoot = this.merkleBuilder.updateFileHash(filePath);
-                        if (newRoot) {
+
+                        // Only fire callback if root actually changed
+                        if (newRoot && oldRoot !== newRoot) {
                             this.onFileChanged(filePath, newRoot);
                         }
                     } else if (event.type === 'delete') {
                         console.log(`\n[DELETE] ${filePath}`);
-                        // For simplicity, we'll trigger a full rebuild on delete
-                        // In production, you'd remove the leaf and rebuild
-                        console.log('File deletion detected. Consider rebuilding tree.');
+
+                        const oldRoot = this.getCurrentRoot();
+                        const newRoot = this.merkleBuilder.deleteFile(filePath);
+
+                        // Fire callback if deletion changed the tree
+                        if (newRoot && oldRoot !== newRoot) {
+                            this.onFileChanged(filePath, newRoot);
+                        }
                     }
                 }
             }
