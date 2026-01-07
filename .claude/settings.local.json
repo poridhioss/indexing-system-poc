@@ -3,7 +3,8 @@
     "allow": [
       "Bash(npm install)",
       "Bash(npm run build:*)",
-      "Bash(copy:*)"
+      "Bash(copy:*)",
+      "Bash(timeout 3 npm start)"
     ]
   }
 }

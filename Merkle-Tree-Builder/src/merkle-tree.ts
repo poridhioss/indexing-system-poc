@@ -114,7 +114,7 @@ export class MerkleTreeBuilder {
             const entries = fs.readdirSync(dir, { withFileTypes: true });
 
             for (const entry of entries) {
-                const fullPath = path.join(dir, entry.name);
+                const fullPath = path.resolve(path.join(dir, entry.name));
 
                 // Skip node_modules, .git, etc.
                 if (entry.name === 'node_modules' || entry.name === '.git' || entry.name === 'dist' || entry.name === '.puku') {
@@ -128,6 +128,7 @@ export class MerkleTreeBuilder {
                     if (extensions.includes(ext)) {
                         const hash = this.hashFile(fullPath);
                         if (hash) {
+                            // Store absolute path directly
                             leaves.push({ filePath: fullPath, hash });
                         }
                     }
@@ -169,7 +170,7 @@ export class MerkleTreeBuilder {
             return null;
         }
 
-        // Update or add leaf
+        // Update or add leaf (direct path comparison)
         const existingLeaf = state.leaves.find(l => l.filePath === filePath);
         if (existingLeaf) {
             // Check if hash actually changed
@@ -212,7 +213,7 @@ export class MerkleTreeBuilder {
             return null;
         }
 
-        // Find the file in leaves
+        // Find the file in leaves (direct path comparison)
         const leafIndex = state.leaves.findIndex(l => l.filePath === filePath);
         if (leafIndex === -1) {
             console.log(`File ${filePath} not found in tree`);
@@ -222,7 +223,7 @@ export class MerkleTreeBuilder {
         // Remove the leaf
         state.leaves.splice(leafIndex, 1);
 
-        // If no leaves left, return null
+        // If no leaves left, return empty string
         if (state.leaves.length === 0) {
             console.log('No files left in tree');
             this.saveMerkleState({

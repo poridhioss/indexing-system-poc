@@ -207,7 +207,6 @@ Navigate to the Merkle-Tree-Builder project:
 
 ```bash
 cd indexing-system-poc/Merkle-Tree-Builder
-npm install
 ```
 
 ### Project Structure
@@ -386,6 +385,33 @@ buildFromDirectory(dirPath: string, extensions: string[] = ['.js', '.ts', '.tsx'
 
 This method performs a recursive directory scan to discover all source files. It filters by extension (only `.js`, `.ts`, etc.) and skips directories like `node_modules` and `.git`. Files are sorted by path for consistency, then the tree is built and saved to disk.
 
+### Step 4b: Path Normalization
+
+[merkle-tree.ts:39-49](../../Merkle-Tree-Builder/src/merkle-tree.ts#L39-L49)
+
+```typescript
+private normalizePath(filePath: string): string {
+    // Convert to absolute path first, then make it relative to cwd
+    const absolutePath = path.isAbsolute(filePath) ? filePath : path.resolve(filePath);
+    const relativePath = path.relative(process.cwd(), absolutePath);
+    // Normalize path separators to forward slashes for cross-platform consistency
+    return relativePath.replace(/\\/g, '/');
+}
+```
+
+**Critical for file deletion**: This helper method ensures all file paths are stored consistently as relative paths with forward slashes. Without this, file deletions fail because:
+
+1. The file watcher provides **absolute paths** from the OS (e.g., `/home/user/project/src/auth.ts`)
+2. The merkle state might have **relative paths** (e.g., `test-project/src/auth.ts`)
+3. When `deleteFile()` tries to find the file using `findIndex(l => l.filePath === filePath)`, the comparison fails!
+
+The normalizePath method solves this by:
+- Converting all paths to absolute first (handles both relative and absolute inputs)
+- Making them relative to `process.cwd()` for consistency
+- Normalizing path separators (`\` → `/`) for cross-platform compatibility
+
+This ensures that whether a file path comes from the initial directory scan, a file watcher event, or user input, it's always stored and compared in the same format.
+
 ### Step 5: Updating File Hash
 
 [merkle-tree.ts:158-199](../../Merkle-Tree-Builder/src/merkle-tree.ts#L158-L199)
@@ -444,20 +470,23 @@ When a file changes, this method loads the current Merkle state, computes the ne
 
 ### Step 5b: Handling File Deletion
 
-[merkle-tree.ts:207-252](../../Merkle-Tree-Builder/src/merkle-tree.ts#L207-L252)
+[merkle-tree.ts:221-272](../../Merkle-Tree-Builder/src/merkle-tree.ts#L221-L272)
 
 ```typescript
 deleteFile(filePath: string): string | null {
+    // Normalize the incoming path for consistent comparison
+    const normalizedPath = this.normalizePath(filePath);
+
     const state = this.loadMerkleState();
     if (!state) {
         console.error('No merkle state found. Run initial build first.');
         return null;
     }
 
-    // Find the file in leaves
-    const leafIndex = state.leaves.findIndex(l => l.filePath === filePath);
+    // Find the file in leaves (use normalized path for comparison)
+    const leafIndex = state.leaves.findIndex(l => l.filePath === normalizedPath);
     if (leafIndex === -1) {
-        console.log(`File ${filePath} not found in tree`);
+        console.log(`File ${normalizedPath} not found in tree`);
         return state.root; // File wasn't tracked, no change
     }
 
@@ -472,7 +501,7 @@ deleteFile(filePath: string): string | null {
             leaves: [],
             timestamp: new Date().toISOString(),
         });
-        this.addToDirtyQueue(filePath);
+        this.addToDirtyQueue(normalizedPath);
         return '';
     }
 
@@ -494,7 +523,15 @@ deleteFile(filePath: string): string | null {
 }
 ```
 
-This method handles file deletions by removing the corresponding leaf from the tree and recomputing the Merkle root. Unlike simple updates, deletions require splicing the leaf from the array (line 223), then rebuilding the tree with the remaining leaves. The deleted file is added to the dirty queue so the server knows to remove its chunks from the vector database. Edge case: if all files are deleted, the root becomes an empty string.
+This method handles file deletions by removing the corresponding leaf from the tree and recomputing the Merkle root. **Critical fix (line 477-478)**: The incoming filePath is normalized before comparison to ensure the file is found in the leaves array. Without this normalization, file deletions would silently fail when the watcher provides an absolute path but the merkle state contains relative paths.
+
+The method then:
+1. Finds the file index using the normalized path (line 487)
+2. Splices the leaf from the array (line 494)
+3. Rebuilds the tree with remaining leaves (line 509)
+4. Saves the new state and adds to dirty queue (lines 512-519)
+
+Edge case: if all files are deleted, the root becomes an empty string (lines 497-506).
 
 ### Step 6: Local Storage
 
@@ -617,14 +654,23 @@ async start(): Promise<this> {
                     // File created or modified
                     console.log(`\n[${event.type.toUpperCase()}] ${filePath}`);
 
+                    const oldRoot = this.getCurrentRoot();
                     const newRoot = this.merkleBuilder.updateFileHash(filePath);
-                    if (newRoot) {
+
+                    // Only fire callback if root actually changed
+                    if (newRoot && oldRoot !== newRoot) {
                         this.onFileChanged(filePath, newRoot);
                     }
                 } else if (event.type === 'delete') {
                     console.log(`\n[DELETE] ${filePath}`);
-                    // For simplicity, we'll trigger a full rebuild on delete
-                    console.log('File deletion detected. Consider rebuilding tree.');
+
+                    const oldRoot = this.getCurrentRoot();
+                    const newRoot = this.merkleBuilder.deleteFile(filePath);
+
+                    // Fire callback if deletion changed the tree
+                    if (newRoot && oldRoot !== newRoot) {
+                        this.onFileChanged(filePath, newRoot);
+                    }
                 }
             }
         }
@@ -635,7 +681,13 @@ async start(): Promise<this> {
 }
 ```
 
-The watcher integrates the file watcher from `File Watcher Lab` with the Merkle tree builder. When a file changes, it recomputes the hash, updates the tree, and fires callbacks. This creates a complete change detection pipeline: file save → watcher event → hash update → Merkle root update → dirty queue update.
+The watcher integrates the file watcher from `File Watcher Lab` with the Merkle tree builder. The implementation includes two critical optimizations:
+
+1. **Root Comparison Before Callback** (lines 619-625, 629-635): Before calling `onFileChanged()`, the watcher captures the old root hash and compares it with the new root. The callback only fires if they differ, preventing false "Merkle tree updated!" messages when files are saved without content changes.
+
+2. **File Deletion Handling** (lines 626-636): When a delete event occurs, the watcher calls `merkleBuilder.deleteFile()` which removes the leaf from the tree, rebuilds it, and returns the new root. The same root comparison logic applies, ensuring callbacks only fire for actual tree changes.
+
+This creates an accurate change detection pipeline: file save → watcher event → hash update → **root comparison** → callback only if changed → dirty queue update.
 
 ## Part 5: Running the Demo
 
@@ -663,16 +715,7 @@ export function login(username: string, password: string): User | null {
 
 Save the file. The watcher will detect the change:
 
-```
-[UPDATE] test-project\src\auth.ts
-Merkle root updated: 03330b97... -> c8d9f2a5...
-
-✓ Merkle tree updated!
-  File: test-project\src\auth.ts
-  New root: c8d9f2a5e1f3b8a4...
-
-  Dirty queue: 1 file(s)
-```
+![Output](./images/image-10.png)
 
 The root hash changed because the file content changed!
 
@@ -719,11 +762,11 @@ hash('function login() {}') = 'abc123'
 
 // Two different files with same content produce same hash
 // src/auth.ts → 'abc123'
-// test/auth.ts → 'abc123'  ❌ Problem!
+// test/auth.ts → 'abc123'  Problem!
 
 // With path
 hash('src/auth.ts' + 'function login() {}') = 'def456'
-hash('test/auth.ts' + 'function login() {}') = 'ghi789'  ✓ Unique
+hash('test/auth.ts' + 'function login() {}') = 'ghi789'  Unique
 ```
 
 Including the path ensures location matters—identical code in different files is tracked separately.
@@ -744,50 +787,6 @@ To update one file, you only recompute:
 - ~3-4 parent hashes (path to root)
 
 Instead of recomputing all 10 file hashes!
-
-## Part 7: Theory Summary
-
-### What Makes Merkle Trees Special?
-
-Merkle Trees are unique because they provide **efficient verification** without requiring the entire dataset. This is achieved through three key properties:
-
-1. **Compact Representation**: A single hash (Merkle Root) represents the entire dataset
-2. **Change Propagation**: Any change in a leaf propagates up to the root
-3. **Logarithmic Verification**: Verify data integrity in O(log n) time instead of O(n)
-
-### Mathematical Efficiency
-
-For a codebase with **1,000 files**:
-
-**Without Merkle Tree:**
-- Compare 1,000 file hashes individually: **O(n) = 1,000 operations**
-- Network transfer: ~64KB (1,000 × 64 bytes per hash)
-
-**With Merkle Tree:**
-- Compare 1 root hash: **O(1) = 1 operation**
-- Network transfer: ~64 bytes (single hash)
-- If changed: Only process dirty files (e.g., 3 files instead of 1,000)
-
-**Efficiency gain: 1000x reduction in comparisons, 1000x reduction in data transfer**
-
-### Why Hash the File Path + Content?
-
-This design decision prevents hash collisions for identical code in different locations:
-
-```typescript
-// Problem: Without path hashing
-utils.js → hash("export function log() {}") → abc123...
-test.js  → hash("export function log() {}") → abc123...  ❌ Same hash!
-
-// Solution: With path hashing
-utils.js → hash("utils.js" + "export function log() {}") → abc123...
-test.js  → hash("test.js" + "export function log() {}")  → def456...  ✓ Unique!
-```
-
-This ensures that:
-1. Files are tracked by both **location** and **content**
-2. Moving a file results in a different hash (location changed)
-3. Identical utilities in different files have unique identities
 
 ### The Dirty Queue Pattern
 

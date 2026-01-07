@@ -1,3 +1,8 @@
+export function capitalize(str: string): string {
+    if (!str) return '';
+    return str.charAt(0).toUpperCase() + str.slice(1).toLowerCase();
+}
+
 export function truncate(str: string, maxLength: number): string {
     if (str.length <= maxLength) return str;
     return str.substring(0, maxLength - 3) + '...';
@@ -12,10 +17,10 @@ export function slugify(str: string): string {
         .replace(/^-+|-+$/g, '');
 }
 
-export function camelCase(str: string): string {
-    return str
-        .replace(/(?:^\w|[A-Z]|\b\w)/g, (word, index) => {
-            return index === 0 ? word.toLowerCase() : word.toUpperCase();
-        })
-        .replace(/\s+/g, '');
+export function camelToSnake(str: string): string {
+    return str.replace(/[A-Z]/g, letter => `_${letter.toLowerCase()}`);
+}
+// Hello world ! From snake to camel
+export function snakeToCamel(str: string): string {
+    return str.replace(/_([a-z])/g, (_, letter) => letter.toUpperCase());
 }

@@ -1,43 +1,46 @@
 export enum LogLevel {
-    DEBUG = 'DEBUG',
-    INFO = 'INFO',
-    WARN = 'WARN',
-    ERROR = 'ERROR',
+    DEBUG = 0,
+    INFO = 1,
+    WARN = 2,
+    ERROR = 3,
 }
 
 export class Logger {
     private level: LogLevel;
+    private prefix: string;
 
-    constructor(level: LogLevel = LogLevel.INFO) {
+    constructor(prefix: string = '', level: LogLevel = LogLevel.INFO) {
+        this.prefix = prefix;
         this.level = level;
     }
 
-    debug(message: string): void {
-        if (this.shouldLog(LogLevel.DEBUG)) {
-            console.log(`[${LogLevel.DEBUG}] ${message}`);
+    setLevel(level: LogLevel): void {
+        this.level = level;
+    }
+
+    debug(message: string, ...args: any[]): void {
+        if (this.level <= LogLevel.DEBUG) {
+            console.debug(`[DEBUG]${this.prefix} ${message}`, ...args);
         }
     }
 
-    info(message: string): void {
-        if (this.shouldLog(LogLevel.INFO)) {
-            console.log(`[${LogLevel.INFO}] ${message}`);
+    info(message: string, ...args: any[]): void {
+        if (this.level <= LogLevel.INFO) {
+            console.info(`[INFO]${this.prefix} ${message}`, ...args);
         }
     }
 
-    warn(message: string): void {
-        if (this.shouldLog(LogLevel.WARN)) {
-            console.warn(`[${LogLevel.WARN}] ${message}`);
+    warn(message: string, ...args: any[]): void {
+        if (this.level <= LogLevel.WARN) {
+            console.warn(`[WARN]${this.prefix} ${message}`, ...args);
         }
     }
 
-    error(message: string): void {
-        if (this.shouldLog(LogLevel.ERROR)) {
-            console.error(`[${LogLevel.ERROR}] ${message}`);
+    error(message: string, ...args: any[]): void {
+        if (this.level <= LogLevel.ERROR) {
+            console.error(`[ERROR]${this.prefix} ${message}`, ...args);
         }
-    }
-
-    private shouldLog(level: LogLevel): boolean {
-        const levels = [LogLevel.DEBUG, LogLevel.INFO, LogLevel.WARN, LogLevel.ERROR];
-        return levels.indexOf(level) >= levels.indexOf(this.level);
     }
 }
+
+export const logger = new Logger('[App]');
