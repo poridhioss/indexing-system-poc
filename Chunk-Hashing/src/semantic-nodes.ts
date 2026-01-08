@@ -1,10 +1,28 @@
-const Parser = require('web-tree-sitter');
-
 /**
  * Semantic node types for different languages
  * These are AST node types that represent meaningful code units
  */
-const SEMANTIC_NODES = {
+
+export type SupportedLanguage = 'javascript' | 'typescript' | 'python' | 'go' | 'rust';
+
+export interface LanguageNodeTypes {
+    function?: string[];
+    class?: string[];
+    method?: string[];
+    arrow?: string[];
+    variable?: string[];
+    export?: string[];
+    interface?: string[];
+    type?: string[];
+    enum?: string[];
+    decorated?: string[];
+    struct?: string[];
+    impl?: string[];
+    trait?: string[];
+    mod?: string[];
+}
+
+export const SEMANTIC_NODES: Record<SupportedLanguage, LanguageNodeTypes> = {
     javascript: {
         // Top-level declarations
         function: ['function_declaration', 'generator_function_declaration'],
@@ -51,10 +69,8 @@ const SEMANTIC_NODES = {
 /**
  * Get all semantic node types for a language (flattened)
  */
-function getSemanticTypes(language) {
-    const langNodes = SEMANTIC_NODES[language];
+export function getSemanticTypes(language: string): string[] {
+    const langNodes = SEMANTIC_NODES[language as SupportedLanguage];
     if (!langNodes) return [];
     return Object.values(langNodes).flat();
 }
-
-module.exports = { SEMANTIC_NODES, getSemanticTypes };

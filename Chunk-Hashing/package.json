@@ -1,24 +1,28 @@
 {
   "name": "chunk-hashing",
   "version": "1.0.0",
-  "description": "Content-based hashing for semantic code chunks",
-  "main": "src/example.js",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
   "scripts": {
-    "start": "node src/example.js",
+    "build": "tsc",
+    "start": "node dist/example.js",
+    "dev": "ts-node src/example.ts",
+    "clean": "rm -rf dist",
     "test": "echo \"Error: no test specified\" && exit 1"
   },
-  "keywords": [
-    "hashing",
-    "md5",
-    "sha256",
-    "code-indexing",
-    "semantic-chunking"
-  ],
+  "keywords": ["chunk", "hashing", "sha256", "code-indexing", "semantic-chunking"],
   "author": "",
   "license": "ISC",
+  "description": "Chunk hashing for two-phase sync protocol - computes hashes without storing code",
   "dependencies": {
     "tree-sitter-javascript": "^0.25.0",
     "tree-sitter-python": "^0.25.0",
+    "tree-sitter-typescript": "^0.23.2",
     "web-tree-sitter": "^0.26.3"
+  },
+  "devDependencies": {
+    "@types/node": "^20.10.0",
+    "ts-node": "^10.9.2",
+    "typescript": "^5.3.0"
   }
 }

@@ -172,20 +172,20 @@ export class MerkleWatcher {
     /**
      * Simulate server sync (clear dirty queue)
      */
-    simulateSync(): void {
-        const queue = this.merkleBuilder.getDirtyQueue();
-        if (queue && queue.dirtyFiles.length > 0) {
-            console.log('\n=== SIMULATING SERVER SYNC ===');
-            console.log(`Syncing ${queue.dirtyFiles.length} dirty files:`);
-            queue.dirtyFiles.forEach(f => console.log(`  - ${f}`));
-            console.log('Server would now:');
-            console.log('  1. Compare chunk hashes for these files');
-            console.log('  2. Re-embed only changed chunks');
-            console.log('  3. Update vector database');
-            this.merkleBuilder.clearDirtyQueue();
-            console.log('Dirty queue cleared.');
-        } else {
-            console.log('\nNo dirty files to sync.');
-        }
-    }
+    // simulateSync(): void {
+    //     const queue = this.merkleBuilder.getDirtyQueue();
+    //     if (queue && queue.dirtyFiles.length > 0) {
+    //         console.log('\n=== SIMULATING SERVER SYNC ===');
+    //         console.log(`Syncing ${queue.dirtyFiles.length} dirty files:`);
+    //         queue.dirtyFiles.forEach(f => console.log(`  - ${f}`));
+    //         console.log('Server would now:');
+    //         console.log('  1. Compare chunk hashes for these files');
+    //         console.log('  2. Re-embed only changed chunks');
+    //         console.log('  3. Update vector database');
+    //         this.merkleBuilder.clearDirtyQueue();
+    //         console.log('Dirty queue cleared.');
+    //     } else {
+    //         console.log('\nNo dirty files to sync.');
+    //     }
+    // }
 }

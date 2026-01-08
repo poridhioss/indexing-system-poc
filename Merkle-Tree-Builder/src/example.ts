@@ -25,9 +25,9 @@ async function main() {
     await watcher.start();
 
     // Simulate periodic sync every 30 seconds
-    setInterval(() => {
-        watcher.simulateSync();
-    }, 30000);
+    // setInterval(() => {
+    //     watcher.simulateSync();
+    // }, 30000);
 
     // Handle graceful shutdown
     process.on('SIGINT', async () => {
