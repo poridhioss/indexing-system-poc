@@ -369,7 +369,3 @@ In this lab, you learned:
 You might have noticed that each API request takes 200-800ms. In a real code editor, users type continuously, and waiting 300ms+ for each keystroke would feel sluggish.
 
 **This is where caching becomes essential.**
-
-### What's Next
-
-In **Lab 2: Radix Trie Cache**, we'll solve the typing latency problem:
