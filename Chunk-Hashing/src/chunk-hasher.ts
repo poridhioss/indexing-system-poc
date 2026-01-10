@@ -32,8 +32,8 @@ export type LanguageConfigs = Record<string, string>;
  *
  * Splits code into semantic chunks and computes SHA-256 hashes.
  * Designed for two-phase sync protocol:
- * - Phase 2: Send hashes + metadata (no code)
- * - Phase 3: Send code only for chunks server requests
+ * - Phase 1: Send hashes + metadata (no code)
+ * - Phase 2: Send code only for chunks server requests
  *
  * Key difference from SemanticChunker:
  * - Returns HashedChunk (hash + reference) instead of SemanticChunk (code included)

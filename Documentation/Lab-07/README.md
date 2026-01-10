@@ -6,8 +6,7 @@ This is exactly how PUKU Editor, Cursor and other production AI code editors imp
 
 ## Prerequisites
 
-- Completed **Semantic Code Chunking Lab** (Lab-04)
-- Understanding of the two-phase sync protocol (see `Pipeline/cursor-architecture.md`)
+- Completed **Semantic Code Chunking Lab**
 - Node.js 18+ installed
 
 ## What You'll Learn
@@ -24,21 +23,11 @@ This is exactly how PUKU Editor, Cursor and other production AI code editors imp
 
 When syncing code to a server for embedding generation, you face a key challenge: **how do you minimize data transfer while still enabling the server to generate embeddings?**
 
-```mermaid
-flowchart LR
-    subgraph "Without Chunk Hashing"
-        A1[10,000 Chunks] -->|Send All| B1[Server]
-        B1 --> C1[Re-embed All]
-    end
-
-    subgraph "With Chunk Hashing"
-        A2[10,000 Chunks] -->|Send Hashes| B2[Server]
-        B2 -->|Request 20| C2[Send Changed Only]
-        C2 --> D2[Embed 20]
-    end
-```
+![Data Transfer Problem](./images/infra-1.svg)
 
 Consider a typical development workflow. You open a project with 1,000 files containing 10,000 semantic chunks. Throughout the day, you edit maybe 5-10 files, changing perhaps 20 chunks total. Without an efficient sync mechanism, every sync would send all 10,000 chunks to the server—megabytes of code transferred just to update a handful of changes. The server would re-embed everything, wasting compute resources on 9,980 unchanged chunks. At scale, this becomes prohibitively expensive in bandwidth, API costs, and time.
+
+![Chunk Hashing Solution](./images/infra-2.svg)
 
 Chunk hashing solves this by introducing a two-phase protocol. In Phase 1, the client computes SHA-256 hashes for each chunk and sends only these hashes to the server—no actual code. The server checks each hash against its cache to identify which chunks are new or changed. In Phase 2, the client sends code only for the chunks the server explicitly requests. This means if you changed 20 chunks out of 10,000, only those 20 chunks' code gets transferred.
 
@@ -46,57 +35,19 @@ Chunk hashing solves this by introducing a two-phase protocol. In Phase 1, the c
 
 The two-phase protocol separates metadata exchange from code transfer:
 
-```mermaid
-flowchart LR
-    subgraph Client
-        A[Source Files] --> B[Semantic Chunker]
-        B --> C[Chunk Hasher]
-        C --> D[Hashed Chunks]
-    end
+![Phase 1: Metadata Exchange](./images/infra-3.svg)
 
-    subgraph Phase 1
-        D --> E[Hashes + Metadata]
-        E --> F{Server Cache}
-    end
+In **Phase 1**, the client parses source files with Tree-Sitter, creates semantic chunks, and computes SHA-256 hashes. Only hashes are sent to the server—no actual code. The server checks each hash against its cache store and identifies which chunks are missing (new or changed).
 
-    subgraph Phase 2
-        F -->|Missing Hashes| G[Request Code]
-        G --> H[Send Code]
-        H --> I[Generate Embedding]
-        I --> J[Discard Code]
-    end
-```
+![Phase 2: Code Transfer](./images/infra-4.svg)
 
-In **Phase 1**, the client sends only hashes and metadata—no actual code. The server checks its cache to determine which chunks are new or changed. In **Phase 2**, the client sends code only for the chunks the server requests. The server generates embeddings from this code, then immediately discards it. This approach achieves **97% bandwidth savings** compared to sending all code upfront.
+In **Phase 2**, the client sends actual code only for the chunks the server requested. The client retrieves this code using the stored reference (file path + line numbers). The server then processes these chunks (generates embeddings, summaries, etc.) and discards the code immediately after. This approach achieves **97% bandwidth savings** compared to sending all code upfront.
 
 ### Why Store References, Not Code?
 
 A key design decision: **HashedChunk stores a reference to the code, not the code itself.**
 
-```mermaid
-flowchart TB
-    subgraph "SemanticChunk"
-        A1[text: function code...]
-        A2[type: function]
-        A3[name: login]
-        A4[lines: 10-25]
-        A1 ~~~ A2 ~~~ A3 ~~~ A4
-    end
-
-    subgraph "HashedChunk"
-        B1[hash: abc123...]
-        B2[type: function]
-        B3[name: login]
-        B4[reference → file:line]
-        B1 ~~~ B2 ~~~ B3 ~~~ B4
-    end
-
-    C[Code Content] -->|Stored In| A1
-    C -->|Hash Only| B1
-    D[Disk Location] -->|Reference| B4
-```
-
-In `SemanticChunk` Lab, we store the actual code text along with metadata like type, name, and line numbers. This works fine for immediate processing, but becomes inefficient when you need to track thousands of chunks across a large codebase.
+In the Semantic Chunking Lab, we store the actual code text along with metadata like type, name, and line numbers. This works fine for immediate processing, but becomes inefficient when you need to track thousands of chunks across a large codebase.
 
 `HashedChunk` takes a different approach. Instead of storing the code, it stores a SHA-256 hash of the code plus a reference (file path and line numbers) that can retrieve the code later. The code is read from disk only when the server actually requests it.
 
@@ -122,6 +73,11 @@ Chunk-Hashing/
 │   ├── semantic-nodes.ts    # Language-specific AST node mappings
 │   ├── example.ts           # Usage demonstration
 │   └── index.ts             # Public exports
+├── test-project/
+│   └── src/
+│       ├── user-service.js  # Sample user service module
+│       ├── validator.js     # Sample validation utilities
+│       └── api.js           # Sample API client module
 ├── dist/                    # Compiled output
 ├── package.json
 └── tsconfig.json
@@ -313,30 +269,7 @@ The `FileSyncPayload` aggregates all chunk hashes for a single file. This is the
 
 ### Complete Sync Flow
 
-```mermaid
-sequenceDiagram
-    participant C as Client
-    participant S as Server
-    participant Cache as Hash Cache
-    participant VDB as Vector DB
-
-    Note over C,S: Phase 1: Metadata Exchange
-    C->>C: Parse files, create chunks
-    C->>C: Compute SHA-256 hashes
-    C->>S: Send hashes + metadata (no code)
-    S->>Cache: Check each hash
-    Cache-->>S: abc123 EXISTS, def456 NOT FOUND
-    S->>C: Request code for: def456
-
-    Note over C,S: Phase 2: Code Transfer
-    C->>C: Read code using reference
-    C->>S: Send code for def456
-    S->>S: Generate embedding
-    S->>S: DISCARD code
-    S->>VDB: Store embedding
-    S->>Cache: Cache hash def456
-    S->>C: Sync complete
-```
+![Complete Sync Flow](./images/infra-5.svg)
 
 ### Phase 1: Metadata Exchange
 
@@ -407,101 +340,37 @@ npm start
 
 ### Expected Output
 
+The example processes three JavaScript files from the `test-project/src/` folder and outputs a clean summary:
+
 ```
 === Chunk Hashing Demo ===
 
-This demonstrates the two-phase sync protocol:
+user-service.js → 4 chunks
+  function "getUser" [a1b2c3d4e5f6...]
+  function "createUser" [b2c3d4e5f6a1...]
+  class "UserService" [c3d4e5f6a1b2...]
+  block "(anonymous)" [d4e5f6a1b2c3...]
 
-Phase 2: Compute hashes locally, send ONLY metadata to server
-Phase 3: Server requests specific chunks by hash, client sends code
+validator.js → 3 chunks
+  function "validateEmail" [e5f6a1b2c3d4...]
+  function "validatePassword" [f6a1b2c3d4e5...]
+  function "sanitizeInput" [a1b2c3d4e5f6...]
 
-────────────────────────────────────────────────────────────
+api.js → 3 chunks
+  function "fetchData" [b2c3d4e5f6a1...]
+  function "postData" [c3d4e5f6a1b2...]
+  block "(anonymous)" [d4e5f6a1b2c3...]
 
-📁 Processing file: C:\project\src\user-service.js
-
---- Hashed Chunks (no code stored!) ---
-
-Chunk 1:
-  Type: block
-  Name: (none)
-  Hash: 487855891acbe530...
-  Lines: 1-12
-  Size: 181 chars
-  Metadata: { gapFill: true }
-
-Chunk 2:
-  Type: function
-  Name: getUser
-  Hash: 495864761bf8e61d...
-  Lines: 13-21
-  Size: 226 chars
-  Metadata: { parameters: [ 'id' ], async: true }
-
-Chunk 3:
-  Type: class
-  Name: UserService
-  Hash: 4b8a25b5e7dac3a2...
-  Lines: 26-44
-  Size: 395 chars
-
-📤 Phase 2 Payload (sent to server):
-
-FileSyncPayload:
-  filePath: C:\project\src\user-service.js
-  chunks: [
-    { hash: "487855891acbe530...", type: "block", lines: [1, 12] }
-    { hash: "495864761bf8e61d...", type: "function", name: "getUser", lines: [13, 21] }
-    { hash: "4b8a25b5e7dac3a2...", type: "class", name: "UserService", lines: [26, 44] }
-  ]
-
-⚡ Notice: NO actual code in the payload!
-
-📊 Summary:
-  Payload size: ~614 bytes (hashes only)
-  Code size: ~997 bytes (NOT sent unless requested)
-  Savings: 38.4% less data in Phase 2
+Total: 3 files, 10 chunks
 ```
 
 The output demonstrates:
-1. **Chunks extracted** - Functions, classes, and gap-fill blocks identified
-2. **Hashes computed** - SHA-256 for each chunk's content
-3. **No code in payload** - Only hashes and metadata sent to server
-4. **Bandwidth savings** - 38% less data in Phase 2 (more savings at scale)
+1. **Files processed** - Each file from the test project is chunked
+2. **Chunks per file** - Shows how many semantic chunks were extracted
+3. **Chunk details** - Type, name, and truncated hash for each chunk
+4. **Total summary** - Overall count of files and chunks processed
 
-## Part 6: Integration with the Pipeline
-
-### Where Chunk Hashing Fits
-
-```mermaid
-flowchart TB
-    subgraph "Change Detection"
-        A[File Watcher] -->|file changed| B[Merkle Tree]
-        B -->|root changed| C[Dirty Queue]
-    end
-
-    subgraph "Chunk Processing"
-        C --> D[Semantic Chunker]
-        D -->|AST parsing| E[Chunk Hasher]
-        E --> F[Hashed Chunks]
-    end
-
-    subgraph "Server Sync"
-        F -->|Phase 2| G[Send Hashes]
-        G --> H{Cache Check}
-        H -->|miss| I[Phase 3: Send Code]
-        I --> J[Generate Embedding]
-        J --> K[Vector DB]
-    end
-```
-
-The pipeline flows from file changes through chunk hashing to server sync:
-
-1. **File Watcher (Lab-05)** - Detects file changes, adds to dirty queue
-2. **Merkle Tree (Lab-06)** - O(1) change detection via root comparison
-3. **Semantic Chunking (Lab-04)** - Parse AST, extract functions/classes/methods
-4. **Chunk Hashing (Lab-07)** ← YOU ARE HERE - Compute SHA-256 hashes, store references
-5. **Two-Phase Sync** - Send hashes first, code only when requested
-6. **Server Processing** - Generate embeddings, discard code, store in VectorDB
+**Note**: The example focuses on demonstrating chunking and hashing. The `toSyncPayload()` and `createSyncPayload()` methods in the codebase are prepared for the two-phase sync protocol but are not demonstrated in this example. In a production our upcomming labs we will be using these methods to create payloads for server communication.
 
 ### Bandwidth Savings at Scale
 
