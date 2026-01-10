@@ -1,263 +1,345 @@
-# Semantic Code Chunking with Tree-sitter
+# Real-Time File Monitoring
 
-When building AI-powered code search or retrieval-augmented generation (RAG) systems, how you split code into chunks dramatically affects quality. In this lab, you'll build a semantic code chunker that uses Tree-sitter ASTs to split code by meaningful boundaries—functions, classes, and methods—instead of arbitrary line counts.
+Before you can detect code changes for incremental re-indexing, you need a way to know when files change. This lab teaches you how to implement a file watcher using OS-level APIs that forms the foundation of the change detection pipeline.
 
-This is exactly how Cursor, PUKU-Editor, GitHub Copilot, and production AI code assistants chunk code for embeddings and search.
+When a user saves a file, the watcher fires an event. This triggers hash computation and determines whether the file needs to be re-indexed.
 
 ## Prerequisites
 
-- Basic knowledge of TypeScript
-- Familiarity with ASTs and Tree-sitter is helpful but not required
-- Node.js and npm installed
-
-## Project Overview
-
-This project builds a semantic code chunker—a tool that takes source code and splits it into meaningful pieces. Instead of cutting code at random line numbers, it understands the structure and keeps complete functions, classes, and methods together.
-
-![Project Overview](./images/infra-5.svg)
-
-The chunker takes two inputs: your source code and the programming language. It uses Tree-sitter to understand the code structure, then outputs an array of chunks—each containing a complete, meaningful piece of code ready for embedding or search.
+- Completed **AST-Based Semantic Code Chunking Lab**
+- Node.js 18+ installed
+- Basic understanding of event-driven programming
 
 ## What You'll Learn
 
-1. Why semantic chunking produces better embeddings than line-based
-2. Identifying semantic boundaries in code (functions, classes, methods)
-3. Building a multi-language semantic chunker
-4. Handling edge cases (large functions, nested structures)
-5. Adding metadata to chunks for better retrieval
-6. Gap-filling strategies for code between functions
+1. How file watching works at the OS level
+2. Setting up @parcel/watcher for high-performance file watching
+3. Filtering watched files by extension
+4. Computing content hashes on file changes
+5. Handling file create, update, and delete events
 
-## Part 1: Semantic Chunking
+## Part 1: Why File Watching?
 
-### Why Chunk Code at All?
+### The Real-Time Detection Problem
 
-AI embedding models have token limits (typically 512-8192 tokens). A large codebase can't be embedded as one unit. We must split it into chunks that:
+In a code indexing system, you need to know when files change so you can:
 
-1. **Fit the model's context window** - Under token limit
-2. **Preserve meaning** - Complete semantic units
-3. **Enable retrieval** - Searchable, relevant segments
+1. **Update the hash registry** - Detect if content actually changed
+2. **Mark files as dirty** - Queue for next sync cycle
+3. **Trigger re-indexing** - Only for files that changed
 
-The diagram below illustrates this process. Source files of varying sizes (5000, 2000, 3000 lines) pass through a semantic chunker that produces embedding-ready chunks. Each chunk respects token limits while preserving complete code units.
+Without a file watcher, you'd have to scan the entire codebase periodically, which is slow and inefficient.
 
-![Embeddings](./images/infra-3.svg)
+### High-Level Overview
 
-### Line-Based vs Semantic Chunking
+![High-Level Overview](./images/infra-2.svg)
 
-There are two fundamental approaches to splitting code into chunks:
+The file watcher monitors a folder containing multiple files and provides instant detection when any file changes. It acts as the bridge between your file system and the change detection system. When files are added, modified, or deleted within the watched folder, the watcher immediately captures these events and triggers the appropriate callbacks—enabling real-time response to code changes without polling or manual scanning.
 
-| Approach | How It Works | Best For |
-|----------|--------------|----------|
-| **Line-Based** | Splits at fixed character/line counts regardless of code structure | Plain text, prose, logs |
-| **Semantic** | Splits at code boundaries (functions, classes, methods) using AST parsing | Source code, structured data |
+### File Watcher in the Pipeline
 
-Line-based chunking treats code as plain text—simple but destructive. Semantic chunking understands code structure—complex but preserves meaning. For AI code search and RAG systems, semantic chunking produces dramatically better results because embeddings capture complete, meaningful code units rather than arbitrary text fragments.
+![File Watcher in the Pipeline](./images/infra-5.svg)
 
-### Line-Based Chunking Problems
+This diagram shows the complete flow from user action to callback execution. When a user saves a file, the operating system fires a native file system event that @parcel/watcher captures through its native bindings. The event handler performs a file extension check—if the file is ignored (like images or binaries), it's skipped. For source files, the watcher computes a SHA-256 hash of the file content and fires the appropriate callback (create, update, or delete) with the file path and hash value.
 
-Traditional text splitters fail with code:
+## Part 2: Why @parcel/watcher?
 
-```python
-# Line-based chunker (500 chars per chunk)
-def calculate_order_total(items, tax_rate, discount_co  # ← Cut here!
-de):
-    """Calculate the total price of an order."""
-    subtotal = sum(item.price * item.quantity for item in items)
-```
+`Parcel Watcher` is a high-performance file watcher library that is used by `VS Code`, `PUKU IDE by Poridhi`, `Cursor`, `Tailwind`, `Nx`, and other popular IDEs and tools. It is a native library that is written in Rust and C++ and is used to watch files and directories for changes.
 
-**Problems:**
-- `discount_code` becomes `discount_co` and `de`
-- Embedding model sees broken identifiers
-- Search for "discount" won't match this chunk
+### The Performance Advantage
 
-### Semantic Chunking
+Node.js provides `fs.watch()` for file watching, but production IDEs need better performance:
 
-The word `Semantic` means "related to meaning." A semantic chunker splits code at meaningful boundaries:
+| Feature | fs.watch | @parcel/watcher |
+|---------|----------|-----------------|
+| **Implementation** | JavaScript | Native (Rust + C++) |
+| **Performance** | Moderate | Extremely fast |
+| **CPU Usage** | Higher | Lower |
+| **Large Projects** | Struggles | Handles thousands of files |
+| **Used By** | Basic tools | VS Code, Cursor, Tailwind, Nx |
 
-```python
-# Semantic chunker (by function boundaries)
+### Architecture Overview
 
-# Chunk 1: Complete function
-def calculate_order_total(items, tax_rate, discount_code):
-    """Calculate the total price of an order."""
-    subtotal = sum(item.price * item.quantity for item in items)
-    discount = apply_discount(subtotal, discount_code)
-    return (subtotal - discount) * (1 + tax_rate)
+![@parcel/watcher Architecture Overview](./images/infra-3.svg)
 
-# Chunk 2: Complete function
-def apply_discount(amount, code):
-    """Apply discount code to amount."""
-    discounts = {"SAVE10": 0.10, "SAVE20": 0.20}
-    return amount * discounts.get(code, 0)
-```
+The architecture has three distinct layers working together:
 
-**Benefits:**
-- Complete functions with full signatures
-- Docstrings included for context
-- Better embeddings = better search
+**File System Layer**: Each operating system has its own way of detecting file changes. macOS uses FSEvents, Linux uses inotify, and Windows uses ReadDirectoryChangesW. These are fast, native mechanisms built directly into the operating system.
 
-### What Makes a "Semantic Unit"?
+**Parcel Watcher Layer**: This is where @parcel/watcher shines. It takes the different OS-specific events and normalizes them into a single, consistent API. The Cross-Platform API means you write code once and it works everywhere. Event Batching groups multiple file changes together for efficiency—if you save 10 files at once, it processes them as a batch instead of 10 separate events. The High Performance Engine, written in Rust and C++, handles all this with minimal CPU usage.
 
-A semantic unit is any self-contained code construct that represents a complete, meaningful piece of functionality. These are the natural boundaries where code can be split without losing context. The diagram below shows the semantic units for each language—notice how each language has its own constructs (Python uses `def` and `class`, Rust uses `fn` and `impl`, etc.), but they all represent the same concept: complete, standalone code blocks that make sense on their own.
+**Application Layer**: This is your code. The File Watcher Class (our SimpleFileWatcher) subscribes to events from Parcel Watcher and receives clean, batched notifications. When files change, your Event Callbacks fire with the file path and computed hash, ready for processing.
 
-![Semantic Unit](./images/infra-4.svg)
+This layered approach is why @parcel/watcher can handle thousands of files efficiently—the same architecture powering VS Code, Cursor, and other professional development tools.
 
+## Part 3: Project Setup
 
-## Part 2: Building the Semantic Chunker
-
-Now that you understand why semantic chunking matters and what constitutes a semantic unit, let's explore a working implementation. In this part, you'll clone a pre-built semantic chunker, examine its architecture, and understand how each component works together to transform raw source code into meaningful, embedding-ready chunks.
-
-The implementation consists of three core modules:
-1. **semantic-nodes.ts** - Maps programming languages to their AST node types
-2. **chunk.ts** - Defines the data structure for representing chunks
-3. **chunker.ts** - The main chunker that orchestrates parsing, extraction, and gap filling
-
-### Project Setup
-
-Clone the repository and navigate to the semantic chunker project:
+Clone the repository and navigate to the File-Watcher project:
 
 ```bash
 git clone https://github.com/poridhioss/indexing-system-poc.git
-cd indexing-system-poc/Semantic-chunking-with-AST
+cd indexing-system-poc/File-Watcher
 npm install
 ```
 
 ### Project Structure
 
 ```
-Semantic-chunking-with-AST/
+File-Watcher/
 ├── src/
-│   ├── semantic-nodes.ts    # Language-specific AST node mappings
-│   ├── chunk.ts             # SemanticChunk data structure
-│   ├── chunker.ts           # Core SemanticChunker class
-│   ├── example.ts           # Usage demonstration
-│   └── index.ts             # Public exports
+│   └── watcher.ts           # SimpleFileWatcher implementation
 ├── dist/                    # Compiled output
 ├── package.json
 └── tsconfig.json
 ```
 
-The TypeScript configuration uses ES2020 target with strict type checking. It outputs compiled files to `dist/` while keeping source in `src/`, and generates declaration files for type exports. The `esModuleInterop` flag enables seamless imports from CommonJS modules like `web-tree-sitter`.
+### Dependencies
 
-### Core Architecture
+| Package | Version | Purpose |
+|---------|---------|---------|
+| `@parcel/watcher` | ^2.4.1 | High-performance native file watching |
+| `@types/node` | ^20.10.0 | Node.js type definitions |
+| `typescript` | ^5.3.0 | TypeScript compiler |
 
-The semantic chunker follows a pipeline architecture. The diagram below shows the complete flow from input to output.
+The project uses TypeScript with ES2020 module system and generates type declarations for better IDE support. @parcel/watcher provides native bindings that compile during installation.
 
-![Core Architecture](./images/infra-2.svg)
+## Part 4: Implementation
 
-**Input Stage:** The chunker accepts source code, a language identifier (e.g., "javascript", "python"), and configuration parameters like max/min chunk sizes.
+The implementation is in [src/watcher.ts](../../File-Watcher/src/watcher.ts). Let's examine the key components:
 
-**Initialization:** Before processing, the chunker loads the appropriate Tree-sitter WASM grammar for the target language and fetches the semantic node types specific to that language.
+### Step 1: Interface Definition
 
-**Parsing:** Tree-sitter parses the source code into an Abstract Syntax Tree (AST). If parsing fails, the system gracefully falls back to line-based chunking.
-
-**AST Traversal & Size Check:** The chunker walks the AST looking for semantic boundaries. Each potential chunk is checked against size constraints—chunks within limits are extracted directly, while oversized chunks are split into smaller units.
-
-**Gap Filling:** After extracting semantic chunks, gap filling captures any code between them (imports, constants, comments) that would otherwise be lost.
-
-**Output:** The final result is an array of semantic chunks, each containing the code text along with rich metadata like type, name, line numbers, and parent context.
-
-### Step 1: Define Semantic Node Types
-
-This module defines a mapping between programming languages and their AST node types that represent semantic boundaries. The `SEMANTIC_NODES` constant maps each supported language (JavaScript, TypeScript, Python, Go, Rust) to its meaningful code constructs like functions, classes, and methods. The `getSemanticTypes()` helper function flattens all node types for a given language into a single array, making it easy to check if an AST node represents a semantic boundary during traversal.
-
-**See the implementation in `src/semantic-nodes.ts`.**
-
-### Step 2: The Chunk Data Structure
-
-This module (`src/chunk.ts`) defines the data structure for representing a semantic code chunk:
-
-- **ChunkType** - Union type enumerating all chunk categories (function, class, method, interface, etc.)
-- **ChunkMetadata** - Interface storing context like parent scope, function parameters, return types, and flags for async/exported functions
-- **SemanticChunk** - Main class encapsulating chunk properties with:
-  - `charCount` and `lineCount` computed getters for size tracking
-  - `toString()` method for debugging output
-  - `contextualize(filePath)` method that prepends metadata (file path, parent scope, type, parameters) before the code text—essential for generating embedding-ready text that includes context about where the code lives in the codebase
-
-**See the implementation in `src/chunk.ts`.**
-
-### Step 3: The Core Chunker
-
-This module (`src/chunker.ts`) is the main chunker implementation that orchestrates the entire semantic chunking process:
-
-**Core Methods:**
-- `initialize()` - Loads language grammars from WASM files
-- `chunk()` - Main entry point that parses code and extracts chunks
-- `extractChunks()` - Recursively walks the AST looking for semantic nodes
-- `createChunk()` - Builds a SemanticChunk from an AST node with metadata
-- `splitLargeNode()` - Handles oversized chunks by extracting child nodes
-- `fillGaps()` - Creates block chunks for code between semantic units (imports, constants, comments)
-- `fallbackChunk()` - Provides line-based chunking when AST parsing fails
-
-**Chunk Processing Methods:**
-- `extractMethodsFromClass(classChunk)` - When a class exceeds the max chunk size, this method breaks it down into individual method chunks. Each method retains a reference to its parent class name in metadata, preserving the hierarchical relationship.
-- `addOverlap(chunks, code, overlapLines)` - Adds context lines from neighboring chunks to each chunk's text. This helps retrieval find relevant results when searches span chunk boundaries.
-
-**See the implementation in `src/chunker.ts`.**
-
-### Gap Filling Explained
-
-Gap filling ensures that code between semantic chunks (imports, constants, exports) is not lost during chunking. After extracting functions and classes, the chunker identifies any lines not covered by semantic chunks and packages them as "block" type chunks with `gapFill: true` metadata.
-
-## Putting It All Together
-
-Here's how everything works from start to finish:
-
-1. **You provide code** → Pass your source code and language (e.g., "javascript") to the chunker
-
-2. **Tree-sitter parses it** → The code becomes a tree structure where each node represents a piece of code (function, class, variable, etc.)
-
-3. **Chunker walks the tree** → It looks for nodes that match semantic types (like `function_declaration` or `class_definition`)
-
-4. **Size check** → Each match is checked against your size limits:
-   - Too small? Skip it
-   - Just right? Extract it as a chunk
-   - Too big? Break it down further
-
-5. **Gap filling** → Any code between chunks (imports, constants) gets packaged as "block" chunks
-
-6. **Output** → You get an array of `SemanticChunk` objects, each with:
-   - The code text
-   - Type (function, class, method, etc.)
-   - Name (if it has one)
-   - Line numbers
-   - Metadata (parent scope, parameters, etc.)
-
-7. **Ready for use** → Call `chunk.contextualize(filePath)` to get embedding-ready text with context, or use the raw text directly
-
-That's the complete flow—from raw code to structured, meaningful chunks ready for AI embedding and search.
-
-## Part 3: Running the Example
-
-Run the example to see the semantic chunker in action:
-
-```bash
-npm start
+```typescript
+export interface FileWatcherOptions {
+    watchPath?: string;
+    ignored?: string[];
+    extensions?: string[];
+    onFileAdded?: (filePath: string, hash: string | null) => void;
+    onFileChanged?: (filePath: string, hash: string | null) => void;
+    onFileDeleted?: (filePath: string, hash: string | null) => void;
+    onReady?: () => void;
+    onError?: (err: Error) => void;
+}
 ```
 
-This runs `src/example.ts` which demonstrates the SemanticChunker with sample JavaScript and Python code. The example initializes the chunker with custom size limits (4000 max, 50 min characters), loads JavaScript and Python language grammars from their WASM files, then processes sample code from both languages.
+The `FileWatcherOptions` interface defines configuration for the watcher. It specifies which path to watch, patterns to ignore, file extensions to track, and callback functions for different events (add, change, delete). This design allows flexible customization while providing sensible defaults.
 
-**Expected Output:**
+### Step 2: Class Constructor
 
-![Example Output](./images/image-1.png)
+```typescript
+export class SimpleFileWatcher {
+    private watchPath: string;
+    private ignored: string[];
+    private extensions: string[];
+    private subscription: parcelWatcher.AsyncSubscription | null = null;
+    private trackedFiles = new Set<string>();
 
-![Example Output 2](./images/image-2.png)
+    constructor(options: FileWatcherOptions = {}) {
+        this.watchPath = options.watchPath || '.';
+        this.ignored = options.ignored || [
+            '**/node_modules/**',
+            '**/.git/**',
+            '**/dist/**',
+            '**/build/**',
+            '**/*.log',
+        ];
+        this.extensions = options.extensions || ['.js', '.ts', '.jsx', '.tsx', '.py', '.java', '.go', '.rs'];
 
-The output shows each chunk's type, name, line range, character count, and metadata—demonstrating how semantic chunking preserves complete functions and classes while extracting meaningful names and parameters.
+        this.onFileAdded = options.onFileAdded || this._defaultHandler('added');
+        this.onFileChanged = options.onFileChanged || this._defaultHandler('changed');
+        this.onFileDeleted = options.onFileDeleted || this._defaultHandler('deleted');
+    }
+}
+```
 
-**See the implementation in `src/example.ts`.**
+The constructor initializes the watcher with defaults. It sets up ignored patterns to skip non-source directories (node_modules, .git, dist, build) and defines source file extensions (.js, .ts, .py, etc.). The `trackedFiles` Set prevents duplicate events, and `subscription` holds the Parcel watcher subscription (a connection handle returned by `parcelWatcher.subscribe()` that receives file system events and can be used to stop watching via `unsubscribe()`).
 
-## Summary
+### Step 3: Extension Filtering
 
-In this lab, you learned:
+```typescript
+private _shouldWatch(filePath: string): boolean {
+    const ext = path.extname(filePath).toLowerCase();
+    return this.extensions.includes(ext);
+}
+```
 
-| Concept | Description |
-|---------|-------------|
-| **Semantic Chunking** | Splitting code by meaningful boundaries (functions, classes) |
-| **Why It Matters** | Better embeddings, better AI search results |
-| **Node Type Mapping** | Different AST node types for each language |
-| **Size Constraints** | Min/max chunk sizes to balance granularity and context |
-| **Gap Filling** | Handling code between semantic units |
-| **Metadata Extraction** | Parameters, return types, parent scope |
-| **Contextualization** | Adding file/scope info for better embeddings |
+This method performs extension-based filtering. It extracts the file extension, converts it to lowercase for case-insensitive comparison, and checks against the allowed extensions list. This prevents processing of non-source files like images, PDFs, or binaries.
 
-By building this semantic chunker, you've taken a crucial step toward creating high-quality AI-powered code search and retrieval systems that understand code structure and meaning.
+### Step 4: Ignore Pattern Matching
+
+```typescript
+private _shouldIgnore(filePath: string): boolean {
+    const relativePath = path.relative(this.watchPath, filePath);
+
+    for (const pattern of this.ignored) {
+        const regexPattern = pattern
+            .replace(/\*\*/g, '.*')
+            .replace(/\*/g, '[^/]*')
+            .replace(/\//g, '[\\\\/]');
+
+        const regex = new RegExp(regexPattern);
+        if (regex.test(relativePath) || regex.test(filePath)) {
+            return true;
+        }
+    }
+    return false;
+}
+```
+
+This method checks if a file should be ignored based on patterns like `**/node_modules/**` or `**/.git/**`. Since @parcel/watcher doesn't understand glob patterns directly, we convert them to regular expressions. For example, `**/node_modules/**` becomes a regex that matches any path containing "node_modules". The method converts the file path to be relative to the watch directory, then tests it against each ignore pattern. If any pattern matches, the file is ignored. This prevents the watcher from processing thousands of dependency files in node_modules or git metadata files.
+
+### Step 5: Hash Computation
+
+```typescript
+private _hashFile(filePath: string): string | null {
+    try {
+        const content = fs.readFileSync(filePath, 'utf8');
+        return crypto.createHash('sha256').update(filePath + content).digest('hex');
+    } catch (err) {
+        return null;
+    }
+}
+```
+
+The hash function computes a SHA-256 digest of the file path concatenated with content. Including the path in the hash ensures that identical files in different locations have unique hashes. If the file cannot be read (permissions, file deleted), it returns null gracefully.
+
+### Step 6: Initial Scan
+
+```typescript
+private async _initialScan(): Promise<void> {
+    const scanDir = (dir: string) => {
+        try {
+            const entries = fs.readdirSync(dir, { withFileTypes: true });
+
+            for (const entry of entries) {
+                const fullPath = path.join(dir, entry.name);
+
+                if (this._shouldIgnore(fullPath)) {
+                    continue;
+                }
+
+                if (entry.isDirectory()) {
+                    scanDir(fullPath);
+                } else if (entry.isFile() && this._shouldWatch(fullPath)) {
+                    this.trackedFiles.add(fullPath);
+                    const hash = this._hashFile(fullPath);
+                    this.onFileAdded(fullPath, hash);
+                }
+            }
+        } catch (err) {
+            // Ignore directories we can't read
+        }
+    };
+
+    scanDir(this.watchPath);
+}
+```
+
+Unlike some watchers, @parcel/watcher doesn't automatically report existing files during initialization. We perform a manual recursive directory scan to discover all existing source files. Each file is added to `trackedFiles` and triggers the `onFileAdded` callback with its hash. This ensures the initial state is captured.
+
+### Step 7: Starting the Watcher
+
+```typescript
+async start(): Promise<this> {
+    console.log(`Starting file watcher on: ${path.resolve(this.watchPath)}`);
+
+    // Perform initial scan
+    await this._initialScan();
+
+    // Start watching for changes
+    this.subscription = await parcelWatcher.subscribe(
+        this.watchPath,
+        (err: Error | null, events: parcelWatcher.Event[]) => {
+            if (err) {
+                this.onError(err);
+                return;
+            }
+
+            for (const event of events) {
+                const filePath = event.path;
+
+                if (this._shouldIgnore(filePath) || !this._shouldWatch(filePath)) {
+                    continue;
+                }
+
+                if (event.type === 'create') {
+                    if (!this.trackedFiles.has(filePath)) {
+                        this.trackedFiles.add(filePath);
+                        const hash = this._hashFile(filePath);
+                        this.onFileAdded(filePath, hash);
+                    }
+                } else if (event.type === 'update') {
+                    const hash = this._hashFile(filePath);
+                    this.onFileChanged(filePath, hash);
+                } else if (event.type === 'delete') {
+                    this.trackedFiles.delete(filePath);
+                    this.onFileDeleted(filePath, null);
+                }
+            }
+        }
+    );
+
+    console.log('Initial scan complete. Watching for changes...\n');
+    this.onReady();
+
+    return this;
+}
+```
+
+The `start()` method subscribes to file system events using @parcel/watcher's subscription API. Events arrive in batches, and we filter each event by extension and ignore patterns. Event types are `create`, `update`, and `delete`. The `trackedFiles` Set prevents duplicate "create" events for files discovered during the initial scan.
+
+### Step 8: Event Flow
+
+![Event Flow](./images/infra-6.svg)
+
+This sequence shows the complete event flow. @parcel/watcher uses native OS APIs for maximum performance, batches events to reduce overhead, and delivers them to our callback. We filter by extension and ignore patterns before computing the hash and invoking the appropriate callback.
+
+### Step 9: Stopping the Watcher
+
+```typescript
+async stop(): Promise<void> {
+    if (this.subscription) {
+        await this.subscription.unsubscribe();
+        this.subscription = null;
+        console.log('File watcher stopped.');
+    }
+}
+```
+
+The `stop()` method asynchronously unsubscribes from file system events, releasing native resources and file handles. This should be called during application shutdown or when watching is no longer needed.
+
+## Part 5: Running the Watcher
+
+### Interactive Mode
+
+Run the watcher to monitor the test-project directory:
+
+```bash
+npm run build
+npm run watch
+```
+
+This automatically creates a `test-project` directory if it doesn't exist and starts monitoring for changes.
+
+### Expected Output
+
+![Expected Output](./images/image-1.png)
+
+### Manual Testing
+
+Now inside the `test-project` directory, create a file called `demo.js` and add the following content:
+```javascript
+console.log('Hello');
+```
+
+You'll see real-time output in the watcher terminal:
+
+![Expected Output](./images/image-2.png)
+
+Notice how each operation shows a different hash value, demonstrating content-based change detection.
+
+Now modify the file and save it, and you'll see the the changes in the terminal with different hash values. Try to delete the file and you'll see the delete event in the terminal.
+
+## Conclusion
+
+You've built a production-grade file watcher using @parcel/watcher—the same technology powering VS Code, Cursor IDE, and other professional development tools. This watcher uses native OS-level APIs (FSEvents on macOS, inotify on Linux, ReadDirectoryChangesW on Windows) to detect file changes in real-time with minimal CPU overhead. By filtering files based on extensions and ignore patterns, then computing SHA-256 hashes immediately when changes occur, you've created the foundation for an intelligent code indexing system. The event batching and initial scan capabilities ensure efficient handling of large codebases, while the subscription-based API provides clean integration points for downstream processing. This file watcher is the critical first step in the change detection pipeline—it detects when users save files, computes content hashes, and triggers the re-indexing process that will identify exactly which code chunks need to be updated.

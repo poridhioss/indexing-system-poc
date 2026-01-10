@@ -4,6 +4,21 @@ After creating semantic chunks with Tree-sitter, you need to compute hashes for 
 
 This is exactly how PUKU Editor, Cursor and other production AI code editors implement their two-phase sync protocol to minimize data transfer and protect user code privacy.
 
+## Project Overview
+
+We are building a complete indexing pipeline from scratch. The diagram below shows the client-side architecture we've built so far:
+
+![Client Side Pipeline](./images/infra-6.svg)
+
+**What we've built:**
+- **File Watcher** monitors the project folder for changes
+- **Merkle Tree** computes file hashes and enables O(1) change detection via root hash comparison
+- **Dirty Queue** tracks which files have changed since the last sync
+- **Tree-Sitter** parses changed files into AST and extracts semantic chunks (functions, classes, methods)
+- **Chunk Hashes** (this lab) computes SHA-256 hashes for each chunk to enable efficient server sync
+
+In this lab, we focus on converting semantic chunks into hashes. The chunk hashes will be sent to the server for comparison—actual code is only sent when the server requests it. Server-side sync and embeddings will be covered in upcoming labs.
+
 ## Prerequisites
 
 - Completed **Semantic Code Chunking Lab**
@@ -342,27 +357,7 @@ npm start
 
 The example processes three JavaScript files from the `test-project/src/` folder and outputs a clean summary:
 
-```
-=== Chunk Hashing Demo ===
-
-user-service.js → 4 chunks
-  function "getUser" [a1b2c3d4e5f6...]
-  function "createUser" [b2c3d4e5f6a1...]
-  class "UserService" [c3d4e5f6a1b2...]
-  block "(anonymous)" [d4e5f6a1b2c3...]
-
-validator.js → 3 chunks
-  function "validateEmail" [e5f6a1b2c3d4...]
-  function "validatePassword" [f6a1b2c3d4e5...]
-  function "sanitizeInput" [a1b2c3d4e5f6...]
-
-api.js → 3 chunks
-  function "fetchData" [b2c3d4e5f6a1...]
-  function "postData" [c3d4e5f6a1b2...]
-  block "(anonymous)" [d4e5f6a1b2c3...]
-
-Total: 3 files, 10 chunks
-```
+![Example Output](./images/image-1.png)
 
 The output demonstrates:
 1. **Files processed** - Each file from the test project is chunked

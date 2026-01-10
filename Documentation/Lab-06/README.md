@@ -1,783 +1,263 @@
-# Merkle Tree for Change Detection
+# Semantic Code Chunking with Tree-sitter
 
-After detecting file changes with a file watcher and computing content hashes, you need an efficient way to detect if ANY file changed in your project. This lab teaches you how to build a Merkle tree that enables O(1) change detection through a single root hash comparison.
+When building AI-powered code search or retrieval-augmented generation (RAG) systems, how you split code into chunks dramatically affects quality. In this lab, you'll build a semantic code chunker that uses Tree-sitter ASTs to split code by meaningful boundaries—functions, classes, and methods—instead of arbitrary line counts.
 
-When a user saves a file, the watcher computes the file hash, rebuilds the Merkle tree, and updates the root hash. The dirty queue tracks which files changed since the last sync.
+This is exactly how Cursor, PUKU-Editor, GitHub Copilot, and production AI code assistants chunk code for embeddings and search.
 
 ## Prerequisites
 
-- Completed **Real-Time File Monitoring Lab**
-- Node.js 18+ installed
-- Basic understanding of binary trees and hash functions
+- Basic knowledge of TypeScript
+- Familiarity with ASTs and Tree-sitter is helpful but not required
+- Node.js and npm installed
+
+## Project Overview
+
+This project builds a semantic code chunker—a tool that takes source code and splits it into meaningful pieces. Instead of cutting code at random line numbers, it understands the structure and keeps complete functions, classes, and methods together.
+
+![Project Overview](./images/infra-5.svg)
+
+The chunker takes two inputs: your source code and the programming language. It uses Tree-sitter to understand the code structure, then outputs an array of chunks—each containing a complete, meaningful piece of code ready for embedding or search.
 
 ## What You'll Learn
 
-1. What Merkle trees are and why they're used for change detection
-2. Building a Merkle tree from file hashes
-3. Computing the Merkle root hash
-4. Recomputing the root when files change
-5. Maintaining dirty queue and merkle state in local storage
+1. Why semantic chunking produces better embeddings than line-based
+2. Identifying semantic boundaries in code (functions, classes, methods)
+3. Building a multi-language semantic chunker
+4. Handling edge cases (large functions, nested structures)
+5. Adding metadata to chunks for better retrieval
+6. Gap-filling strategies for code between functions
 
-## Part 1: Why Merkle Trees?
+## Part 1: Semantic Chunking
 
-### The Change Detection Problem
+### Why Chunk Code at All?
 
-In a code indexing system with thousands of files, you need to answer one critical question:
+AI embedding models have token limits (typically 512-8192 tokens). A large codebase can't be embedded as one unit. We must split it into chunks that:
 
-**"Has ANYTHING changed since the last sync?"**
+1. **Fit the model's context window** - Under token limit
+2. **Preserve meaning** - Complete semantic units
+3. **Enable retrieval** - Searchable, relevant segments
 
-Without a Merkle tree, you'd have to:
-1. Compare every file hash individually (O(n) operation)
-2. Send potentially thousands of hashes to the server
-3. Waste bandwidth and compute on unchanged codebases
+The diagram below illustrates this process. Source files of varying sizes (5000, 2000, 3000 lines) pass through a semantic chunker that produces embedding-ready chunks. Each chunk respects token limits while preserving complete code units.
 
-With a Merkle tree:
-1. Compare a single root hash (O(1) operation)
-2. If roots match, nothing changed - done in milliseconds
-3. If roots differ, process only the dirty files
+![Embeddings](./images/infra-3.svg)
 
-### What is a Merkle Tree?
+### Line-Based vs Semantic Chunking
 
-A **Merkle Tree** is a data structure used primarily in computer science and cryptography to efficiently and securely verify the integrity and consistency of large datasets. It is a binary tree where the leaves store cryptographic hashes of data blocks, and each non-leaf node contains a hash of its child nodes.
+There are two fundamental approaches to splitting code into chunks:
 
-![Merkle Tree Structure](./images/infra-3.svg)
+| Approach | How It Works | Best For |
+|----------|--------------|----------|
+| **Line-Based** | Splits at fixed character/line counts regardless of code structure | Plain text, prose, logs |
+| **Semantic** | Splits at code boundaries (functions, classes, methods) using AST parsing | Source code, structured data |
 
-A Merkle tree is a binary tree where:
-- **Leaf nodes** contain hashes of individual files (or data blocks)
-- **Parent nodes** contain hashes of their children's hashes combined
-- **Root node** (Merkle Root) represents a fingerprint of the entire tree
+Line-based chunking treats code as plain text—simple but destructive. Semantic chunking understands code structure—complex but preserves meaning. For AI code search and RAG systems, semantic chunking produces dramatically better results because embeddings capture complete, meaningful code units rather than arbitrary text fragments.
 
-If ANY leaf changes, all parent hashes up to the root change. This makes change detection extremely efficient.
+### Line-Based Chunking Problems
 
-### Core Concepts of Merkle Trees
+Traditional text splitters fail with code:
 
-#### 1. Hashing
-
-A Merkle Tree relies on cryptographic hash functions (e.g., SHA-256) to create fixed-length outputs (hashes) from input data. Hashes are unique to the input data, so even a small change in the data results in a completely different hash.
-
-![Hashing Concept](./images/image-1.png)
-
-This property is crucial for change detection—if a file's content changes even slightly, its hash will be completely different, propagating the change up the tree.
-
-#### 2. Leaf Nodes
-
-The bottom level of the tree consists of leaf nodes, each containing a hash of a data block (e.g., a file in our code indexing system).
-
-**Example**: If you have four files (auth.ts, database.ts, api.ts, config.ts), their hashes (H1 = hash(auth.ts), H2 = hash(database.ts), etc.) form the leaf nodes.
-
-#### 3. Non-Leaf Nodes (Parent Nodes)
-
-Each parent node is created by hashing the concatenated hashes of its child nodes.
-
-**Example**: For leaf nodes with hashes H1 and H2, the parent node's hash is H12 = hash(H1 + H2).
-
-#### 4. Root Node (Merkle Root)
-
-The topmost node of the tree, known as the Merkle Root, is a single hash that represents all the data in the tree. The Merkle Root is a compact way to summarize the entire dataset—in our case, the entire codebase.
-
-#### 5. Binary Structure
-
-Merkle Trees are typically binary, meaning each parent node has exactly two children. If the number of data blocks is odd, the last hash may be duplicated or promoted to maintain the binary structure. 
-
-### Real-World Usage
-
-Merkle trees are used everywhere:
-- **Git** uses Merkle trees to detect changes in commits
-- **Blockchain** uses them to verify data integrity
-- **VS Code** and **Cursor** use them for efficient code indexing
-- **Bazel** and **Nix** use them for build caching
-
-## Part 2: Understanding the Algorithm
-
-### How a Merkle Tree Works
-
-To construct a Merkle Tree, we follow these fundamental steps:
-
-1. Divide the dataset into smaller blocks (e.g., files in our codebase)
-2. Compute the hash of each block to create leaf nodes
-3. Pair the hashes and compute the hash of each pair to form the next level of the tree
-4. Repeat until a single hash (Merkle Root) remains
-
-### Merkle Tree Construction Algorithm
-
-The algorithm constructs a Merkle Tree from a list of data blocks using a cryptographic hash function (SHA-256). Here's the detailed process:
-
-#### Step 1: Prepare Data Blocks
-
-Start with a list of files (or data blocks) in your project. Ensure the files are in a consistent format for hashing.
-
-![Prepare Data Blocks](./images/infra-1.svg)
-
-In our implementation, we scan the directory and collect all source files (.js, .ts, .tsx, .jsx) while skipping ignored directories (node_modules, .git, dist, .puku).
-
-#### Step 2: Hash the Data Blocks
-
-Compute the cryptographic hash (SHA-256) of each file to create the **leaf nodes** of the tree. Store these hashes in a list.
-
-![Hash Data Blocks](./images/infra-2.svg)
-
-**Our implementation:**
-```typescript
-// Each file gets a SHA-256 hash
-auth.ts    → SHA-256(path + content) → 5f8dbcfb...
-database.ts → SHA-256(path + content) → 554c86c9...
-api.ts      → SHA-256(path + content) → 5b7718d7...
-config.ts   → SHA-256(path + content) → 37b7e566...
+```python
+# Line-based chunker (500 chars per chunk)
+def calculate_order_total(items, tax_rate, discount_co  # ← Cut here!
+de):
+    """Calculate the total price of an order."""
+    subtotal = sum(item.price * item.quantity for item in items)
 ```
 
-Including the file path in the hash ensures that identical files in different locations have unique hashes.
+**Problems:**
+- `discount_code` becomes `discount_co` and `de`
+- Embedding model sees broken identifiers
+- Search for "discount" won't match this chunk
 
-#### Step 3: Build the Tree Bottom-Up
+### Semantic Chunking
 
-Pair the leaf hashes and compute the hash of each pair to form the **parent nodes**. Repeat this process, creating higher levels of the tree by hashing pairs of nodes, until a single hash remains: the **Merkle Root**.
+The word `Semantic` means "related to meaning." A semantic chunker splits code at meaningful boundaries:
 
-![Build Tree Bottom-Up](./images/infra-3.svg)
+```python
+# Semantic chunker (by function boundaries)
 
-As shown in the diagram above, the four files (auth.ts, config.ts, database.ts, api.ts) are first hashed individually to create leaf nodes (h1, h2, h3, h4). These leaves are then paired: h1 and h2 are combined to create parent hash h12, while h3 and h4 create parent hash h34. Finally, these two parent hashes are combined to produce the Merkle root h1234. This hierarchical structure ensures that any change to a single file propagates through its parent nodes all the way up to the root, making change detection extremely efficient.
+# Chunk 1: Complete function
+def calculate_order_total(items, tax_rate, discount_code):
+    """Calculate the total price of an order."""
+    subtotal = sum(item.price * item.quantity for item in items)
+    discount = apply_discount(subtotal, discount_code)
+    return (subtotal - discount) * (1 + tax_rate)
 
-#### Step 4: Handle Odd Number of Hashes
-
-If the number of leaf hashes is odd, we promote the last hash to the next level (or duplicate it if needed to maintain the binary structure).
-
-![Handle Odd Number of Hashes](./images/infra-4.svg)
-
-
-#### Step 5: Output the Merkle Root
-
-The Merkle Root is a single hash that summarizes all the data blocks. We store the entire tree state (root and leaves) in `.puku/merkle-state.json` for future comparisons.
-
-
-### Recomputing on File Change
-
-When a file changes, we don't rebuild the entire tree from scratch. Instead, we use an efficient incremental update strategy that only recomputes the affected path from the changed leaf to the root.
-
-![Recomputing on File Change](./images/infra-5.svg)
-
-The diagram above illustrates what happens when `auth.ts` is modified. The changed file (shown in red) causes its leaf hash h1 to change. This change propagates upward: the parent hash h12 must be recomputed because one of its children (h1) changed. The parent hash h34 remains unchanged (shown in blue) because neither h3 nor h4 were modified. Finally, the root hash h1234 must be recomputed because h12 changed.
-
-This demonstrates the key efficiency of Merkle trees: when auth.ts changes, we only recompute 3 hashes (1 leaf + 2 parents) instead of rehashing all 4 files. The unchanged portions of the tree (h2, h3, h4, and h34) are reused without any recomputation, making the update operation O(log n) instead of O(n).
-
-### Algorithm Pseudocode
-
-```typescript
-function buildMerkleTree(dataBlocks):
-    if dataBlocks is empty:
-        return null
-
-    // Step 1: Hash all data blocks to create leaf nodes
-    leafHashes = []
-    for each block in dataBlocks:
-        hash = SHA256(block.path + block.content)
-        leafHashes.append(hash)
-
-    // Step 2: Build the tree iteratively
-    currentLevel = leafHashes
-    while length(currentLevel) > 1:
-        nextLevel = []
-        for i from 0 to length(currentLevel) step 2:
-            if i + 1 < length(currentLevel):
-                // Pair two hashes and compute parent hash
-                parentHash = SHA256(currentLevel[i] + currentLevel[i+1])
-            else:
-                // Promote last hash if odd number
-                parentHash = currentLevel[i]
-            nextLevel.append(parentHash)
-        currentLevel = nextLevel
-
-    // Step 3: Return the Merkle Root
-    return currentLevel[0]
+# Chunk 2: Complete function
+def apply_discount(amount, code):
+    """Apply discount code to amount."""
+    discounts = {"SAVE10": 0.10, "SAVE20": 0.20}
+    return amount * discounts.get(code, 0)
 ```
 
-The algorithm works in three phases. First, it creates leaf hashes by iterating through all data blocks and computing SHA-256 hashes that combine each file's path with its content. Second, it builds the tree iteratively from bottom to top—starting with the leaf hashes as the current level, it repeatedly pairs adjacent hashes (stepping by 2), computes their parent hash, and moves up a level. This continues until only one hash remains. If an odd number of hashes exists at any level, the unpaired hash is promoted directly to the next level. Finally, when the loop exits, the current level contains exactly one hash—the Merkle root—which is returned as the fingerprint of the entire dataset.
+**Benefits:**
+- Complete functions with full signatures
+- Docstrings included for context
+- Better embeddings = better search
 
-### Edge Cases
+### What Makes a "Semantic Unit"?
 
-1. **Empty Input**: Return null or error
-2. **Single File**: The Merkle Root is simply the hash of that file
-3. **Odd Number of Files**: Promote the last hash to the next level
+A semantic unit is any self-contained code construct that represents a complete, meaningful piece of functionality. These are the natural boundaries where code can be split without losing context. The diagram below shows the semantic units for each language—notice how each language has its own constructs (Python uses `def` and `class`, Rust uses `fn` and `impl`, etc.), but they all represent the same concept: complete, standalone code blocks that make sense on their own.
 
-## Part 3: Project Setup
+![Semantic Unit](./images/infra-4.svg)
 
-First clone the repository:
+
+## Part 2: Building the Semantic Chunker
+
+Now that you understand why semantic chunking matters and what constitutes a semantic unit, let's explore a working implementation. In this part, you'll clone a pre-built semantic chunker, examine its architecture, and understand how each component works together to transform raw source code into meaningful, embedding-ready chunks.
+
+The implementation consists of three core modules:
+1. **semantic-nodes.ts** - Maps programming languages to their AST node types
+2. **chunk.ts** - Defines the data structure for representing chunks
+3. **chunker.ts** - The main chunker that orchestrates parsing, extraction, and gap filling
+
+### Project Setup
+
+Clone the repository and navigate to the semantic chunker project:
+
 ```bash
 git clone https://github.com/poridhioss/indexing-system-poc.git
-```
-
-Navigate to the Merkle-Tree-Builder project:
-
-```bash
-cd indexing-system-poc/Merkle-Tree-Builder
+cd indexing-system-poc/Semantic-chunking-with-AST
+npm install
 ```
 
 ### Project Structure
 
 ```
-Merkle-Tree-Builder/
+Semantic-chunking-with-AST/
 ├── src/
-│   ├── merkle-tree.ts         # Merkle tree implementation
-│   ├── watcher.ts             # File watcher integration
-│   └── example.ts             # Demo application
-├── test-project/              # 10 sample files for testing
-│   ├── src/
-│   │   ├── auth.ts
-│   │   ├── database.ts
-│   │   ├── api.ts
-│   │   ├── validator.ts
-│   │   ├── logger.ts
-│   │   ├── config.ts
-│   │   └── cache.ts
-│   └── utils/
-│       ├── helpers.ts
-│       ├── string.ts
-│       └── date.ts
-├── .puku/                     # Local state (created on first run)
-│   ├── merkle-state.json      # Tree structure and root
-│   └── dirty-queue.json       # Files changed since last sync
-├── dist/                      # Compiled output
+│   ├── semantic-nodes.ts    # Language-specific AST node mappings
+│   ├── chunk.ts             # SemanticChunk data structure
+│   ├── chunker.ts           # Core SemanticChunker class
+│   ├── example.ts           # Usage demonstration
+│   └── index.ts             # Public exports
+├── dist/                    # Compiled output
 ├── package.json
 └── tsconfig.json
 ```
 
-### Dependencies
-
-| Package | Version | Purpose |
-|---------|---------|---------|
-| `@parcel/watcher` | ^2.4.1 | File system monitoring |
-| `crypto` | built-in | SHA-256 hashing |
-| `fs` | built-in | File system operations |
-
-## Part 4: Implementation Walkthrough
-
-### Step 1: File Hashing
-
-[merkle-tree.ts:44-57](../../Merkle-Tree-Builder/src/merkle-tree.ts#L44-L57)
-
-```typescript
-hashFile(filePath: string): string | null {
-    try {
-        const content = fs.readFileSync(filePath, 'utf8');
-        return crypto
-            .createHash('sha256')
-            .update(filePath + content)
-            .digest('hex');
-    } catch (err) {
-        console.error(`Failed to hash file ${filePath}:`, err);
-        return null;
-    }
-}
-```
-
-This method computes a SHA-256 hash by concatenating the file path with its content. Including the path ensures that identical files in different locations have unique hashes. If the file cannot be read, it returns null gracefully.
-
-### Step 2: Hash Pairing
-
-[merkle-tree.ts:59-67](../../Merkle-Tree-Builder/src/merkle-tree.ts#L59-L67)
-
-```typescript
-private hashPair(left: string, right: string): string {
-    return crypto
-        .createHash('sha256')
-        .update(left + right)
-        .digest('hex');
-}
-```
-
-This method combines two child hashes to create a parent hash. The order matters—`hash(A+B)` differs from `hash(B+A)`. This is how we build the tree from bottom to top.
-
-### Step 3: Building the Tree
-
-[merkle-tree.ts:69-104](../../Merkle-Tree-Builder/src/merkle-tree.ts#L69-L104)
-
-```typescript
-buildTree(leaves: { filePath: string; hash: string }[]): MerkleNode {
-    if (leaves.length === 0) {
-        throw new Error('Cannot build Merkle tree with no leaves');
-    }
-
-    // Create leaf nodes
-    let nodes: MerkleNode[] = leaves.map(leaf => ({
-        hash: leaf.hash,
-        filePath: leaf.filePath,
-    }));
-
-    // Build tree bottom-up
-    while (nodes.length > 1) {
-        const nextLevel: MerkleNode[] = [];
-
-        for (let i = 0; i < nodes.length; i += 2) {
-            const left = nodes[i];
-            const right = nodes[i + 1];
-
-            if (right) {
-                // Pair exists, hash them together
-                const parentHash = this.hashPair(left.hash, right.hash);
-                nextLevel.push({
-                    hash: parentHash,
-                    left,
-                    right,
-                });
-            } else {
-                // Odd node, promote it up
-                nextLevel.push(left);
-            }
-        }
-
-        nodes = nextLevel;
-    }
-
-    return nodes[0];
-}
-```
-
-This method builds the Merkle tree iteratively. It starts with leaf nodes (file hashes), pairs them to create parents, and repeats until only one node remains—the root. If there's an odd number of nodes, the last node is promoted to the next level.
-
-### Step 4: Scanning Directory
-
-[merkle-tree.ts:110-166](../../Merkle-Tree-Builder/src/merkle-tree.ts#L110-L166)
-
-```typescript
-buildFromDirectory(dirPath: string, extensions: string[] = ['.js', '.ts', '.tsx', '.jsx']): MerkleNode {
-    const leaves: { filePath: string; hash: string }[] = [];
-
-    const scanDir = (dir: string) => {
-        const entries = fs.readdirSync(dir, { withFileTypes: true });
-
-        for (const entry of entries) {
-            const fullPath = path.resolve(path.join(dir, entry.name));
-
-            // Skip node_modules, .git, etc.
-            if (entry.name === 'node_modules' || entry.name === '.git' ||
-                entry.name === 'dist' || entry.name === '.puku') {
-                continue;
-            }
-
-            if (entry.isDirectory()) {
-                scanDir(fullPath);
-            } else if (entry.isFile()) {
-                const ext = path.extname(entry.name).toLowerCase();
-                if (extensions.includes(ext)) {
-                    const hash = this.hashFile(fullPath);
-                    if (hash) {
-                        // Store absolute path directly
-                        leaves.push({ filePath: fullPath, hash });
-                    }
-                }
-            }
-        }
-    };
-
-    scanDir(dirPath);
-
-    // Sort leaves by file path for consistency
-    leaves.sort((a, b) => a.filePath.localeCompare(b.filePath));
-
-    const tree = this.buildTree(leaves);
-
-    // Save state
-    this.saveMerkleState({
-        root: tree.hash,
-        leaves,
-        timestamp: new Date().toISOString(),
-    });
-
-    return tree;
-}
-```
-
-This method performs a recursive directory scan to discover all source files. It filters by extension (only `.js`, `.ts`, etc.) and skips directories like `node_modules` and `.git`.
-
-**Key implementation detail** (line 117): `path.resolve(path.join(dir, entry.name))` ensures all paths are converted to absolute paths immediately during scanning. This means whether you start the scan with a relative path (`./test-project`) or an absolute path, all stored paths will be absolute.
-
-Files are sorted by path for consistency (alphabetical order ensures the same tree structure across runs), then the tree is built and saved to disk.
-
-### Step 5: Updating File Hash
-
-[merkle-tree.ts:172-216](../../Merkle-Tree-Builder/src/merkle-tree.ts#L172-L216)
-
-```typescript
-updateFileHash(filePath: string): string | null {
-    // Load current state
-    const state = this.loadMerkleState();
-    if (!state) {
-        console.error('No merkle state found. Run initial build first.');
-        return null;
-    }
-
-    // Compute new hash
-    const newHash = this.hashFile(filePath);
-    if (!newHash) {
-        return null;
-    }
-
-    // Update or add leaf (direct path comparison)
-    const existingLeaf = state.leaves.find(l => l.filePath === filePath);
-    if (existingLeaf) {
-        // Check if hash actually changed
-        if (existingLeaf.hash === newHash) {
-            console.log(`File ${filePath} unchanged (same hash)`);
-            return state.root; // No change
-        }
-        existingLeaf.hash = newHash;
-    } else {
-        // New file
-        state.leaves.push({ filePath, hash: newHash });
-        state.leaves.sort((a, b) => a.filePath.localeCompare(b.filePath));
-    }
-
-    // Rebuild tree
-    const tree = this.buildTree(state.leaves);
-
-    // Save updated state
-    this.saveMerkleState({
-        root: tree.hash,
-        leaves: state.leaves,
-        timestamp: new Date().toISOString(),
-    });
-
-    // Add to dirty queue
-    this.addToDirtyQueue(filePath);
-
-    console.log(`Merkle root updated: ${state.root} -> ${tree.hash}`);
-    return tree.hash;
-}
-```
-
-When a file changes, this method loads the current Merkle state, computes the new file hash, and checks if it actually changed. If unchanged, it returns early—**critically, it does NOT add the file to the dirty queue or trigger callbacks**. This prevents false positives when a file is saved without actual content changes.
-
-**Important optimization** (lines 189-192): The method detects when a file is saved without content changes. In this case, the old root hash is returned without updating the tree or dirty queue. The watcher then compares the old and new roots before firing the callback, ensuring "Merkle tree updated!" only appears for real changes.
-
-**Direct path comparison** (line 187): Since all paths are absolute, we can use direct string equality (`l.filePath === filePath`) without any normalization logic. This simplifies the code significantly.
-
-### Step 6: Handling File Deletion
-
-[merkle-tree.ts:221-266](../../Merkle-Tree-Builder/src/merkle-tree.ts#L221-L266)
-
-```typescript
-deleteFile(filePath: string): string | null {
-    // Load current state
-    const state = this.loadMerkleState();
-    if (!state) {
-        console.error('No merkle state found. Run initial build first.');
-        return null;
-    }
-
-    // Find the file in leaves (direct path comparison)
-    const leafIndex = state.leaves.findIndex(l => l.filePath === filePath);
-    if (leafIndex === -1) {
-        console.log(`File ${filePath} not found in tree`);
-        return state.root; // File wasn't tracked, no change
-    }
-
-    // Remove the leaf
-    state.leaves.splice(leafIndex, 1);
-
-    // If no leaves left, return empty string
-    if (state.leaves.length === 0) {
-        console.log('No files left in tree');
-        this.saveMerkleState({
-            root: '',
-            leaves: [],
-            timestamp: new Date().toISOString(),
-        });
-        this.addToDirtyQueue(filePath);
-        return '';
-    }
-
-    // Rebuild tree with remaining leaves
-    const tree = this.buildTree(state.leaves);
-
-    // Save updated state
-    this.saveMerkleState({
-        root: tree.hash,
-        leaves: state.leaves,
-        timestamp: new Date().toISOString(),
-    });
-
-    // Add to dirty queue
-    this.addToDirtyQueue(filePath);
-
-    console.log(`File deleted. Merkle root updated: ${state.root} -> ${tree.hash}`);
-    return tree.hash;
-}
-```
-
-This method handles file deletions by removing the corresponding leaf from the tree and recomputing the Merkle root.
-
-**Simplified implementation**: Since all paths are absolute, the method uses direct string comparison (line 230) to find the file in the leaves array. No path normalization is needed—the file watcher provides absolute paths, and our merkle state stores absolute paths, so the comparison just works.
-
-The method then:
-1. Finds the file index using direct path comparison (line 230)
-2. Splices the leaf from the array (line 237)
-3. Rebuilds the tree with remaining leaves (line 252)
-4. Saves the new state and adds to dirty queue (lines 255-262)
-
-**Edge case** (lines 240-248): If all files are deleted, the root becomes an empty string, representing an empty tree.
-
-### Step 7: Local Storage
-
-[merkle-tree.ts:201-220](../../Merkle-Tree-Builder/src/merkle-tree.ts#L201-L220)
-
-```typescript
-saveMerkleState(state: MerkleState): void {
-    fs.writeFileSync(this.merkleStatePath, JSON.stringify(state, null, 2));
-}
-
-loadMerkleState(): MerkleState | null {
-    try {
-        if (!fs.existsSync(this.merkleStatePath)) {
-            return null;
-        }
-        const data = fs.readFileSync(this.merkleStatePath, 'utf8');
-        return JSON.parse(data);
-    } catch (err) {
-        console.error('Failed to load merkle state:', err);
-        return null;
-    }
-}
-```
-
-The Merkle state is persisted to `.puku/merkle-state.json`. This file contains the root hash and all leaf hashes. When the application restarts, it loads this state instead of rebuilding from scratch.
-
-**Example merkle-state.json:**
-
-![](./images/image-11.png)
-
-Note that all paths are **absolute paths**, specific to the user's machine. This is intentional for IDE use cases where each user maintains their own local Merkle tree.
-
-### Step 8: Dirty Queue Management
-
-[merkle-tree.ts:222-256](../../Merkle-Tree-Builder/src/merkle-tree.ts#L222-L256)
-
-```typescript
-addToDirtyQueue(filePath: string): void {
-    let queue: DirtyQueue;
-
-    try {
-        if (fs.existsSync(this.dirtyQueuePath)) {
-            const data = fs.readFileSync(this.dirtyQueuePath, 'utf8');
-            queue = JSON.parse(data);
-        } else {
-            queue = {
-                lastSync: new Date().toISOString(),
-                dirtyFiles: [],
-            };
-        }
-    } catch (err) {
-        queue = {
-            lastSync: new Date().toISOString(),
-            dirtyFiles: [],
-        };
-    }
-
-    // Add to queue if not already present
-    if (!queue.dirtyFiles.includes(filePath)) {
-        queue.dirtyFiles.push(filePath);
-    }
-
-    fs.writeFileSync(this.dirtyQueuePath, JSON.stringify(queue, null, 2));
-}
-```
-
-The dirty queue tracks which files have changed since the last server sync. This allows batching changes for efficient syncing. When a file changes, it's added to the queue. During sync, the server processes only these dirty files.
-
-
-### Step 8: Watcher Integration
-
-[watcher.ts:88-140](../../Merkle-Tree-Builder/src/watcher.ts#L88-L140)
-
-```typescript
-async start(): Promise<this> {
-    // Build initial tree if not exists
-    const state = this.merkleBuilder.loadMerkleState();
-    if (!state) {
-        await this.buildInitialTree();
-    } else {
-        console.log(`Loaded existing Merkle state. Root: ${state.root.substring(0, 16)}...`);
-    }
-
-    console.log(`\nWatching directory: ${this.watchPath}`);
-
-    // Subscribe to file system events
-    this.subscription = await parcelWatcher.subscribe(
-        this.watchPath,
-        (err: Error | null, events: parcelWatcher.Event[]) => {
-            if (err) {
-                this.onError(err);
-                return;
-            }
-
-            for (const event of events) {
-                const filePath = event.path;
-
-                // Filter
-                if (!this._shouldWatch(filePath) || this._shouldIgnore(filePath)) {
-                    continue;
-                }
-
-                if (event.type === 'create' || event.type === 'update') {
-                    // File created or modified
-                    console.log(`\n[${event.type.toUpperCase()}] ${filePath}`);
-
-                    const oldRoot = this.getCurrentRoot();
-                    const newRoot = this.merkleBuilder.updateFileHash(filePath);
-
-                    // Only fire callback if root actually changed
-                    if (newRoot && oldRoot !== newRoot) {
-                        this.onFileChanged(filePath, newRoot);
-                    }
-                } else if (event.type === 'delete') {
-                    console.log(`\n[DELETE] ${filePath}`);
-
-                    const oldRoot = this.getCurrentRoot();
-                    const newRoot = this.merkleBuilder.deleteFile(filePath);
-
-                    // Fire callback if deletion changed the tree
-                    if (newRoot && oldRoot !== newRoot) {
-                        this.onFileChanged(filePath, newRoot);
-                    }
-                }
-            }
-        }
-    );
-
-    this.onReady();
-    return this;
-}
-```
-
-The watcher integrates the file watcher from `File Watcher Lab` with the Merkle tree builder. Key integration points:
-
-1. **File Events → Hash Update**: When `@parcel/watcher` detects file changes (create, update, delete), the watcher calls `updateFileHash()` or `deleteFile()` on the merkle builder.
-
-2. **Root Comparison Optimization**: Before firing callbacks, the watcher compares old and new root hashes. Callbacks only fire if the root actually changed, preventing false updates when files are saved without content changes.
-
-This creates the complete pipeline: **file change → watcher event → merkle update → root comparison → callback (if changed) → dirty queue update**.
-
-## Part 5: Running the Demo
-
-### Build and Run
+The TypeScript configuration uses ES2020 target with strict type checking. It outputs compiled files to `dist/` while keeping source in `src/`, and generates declaration files for type exports. The `esModuleInterop` flag enables seamless imports from CommonJS modules like `web-tree-sitter`.
+
+### Core Architecture
+
+The semantic chunker follows a pipeline architecture. The diagram below shows the complete flow from input to output.
+
+![Core Architecture](./images/infra-2.svg)
+
+**Input Stage:** The chunker accepts source code, a language identifier (e.g., "javascript", "python"), and configuration parameters like max/min chunk sizes.
+
+**Initialization:** Before processing, the chunker loads the appropriate Tree-sitter WASM grammar for the target language and fetches the semantic node types specific to that language.
+
+**Parsing:** Tree-sitter parses the source code into an Abstract Syntax Tree (AST). If parsing fails, the system gracefully falls back to line-based chunking.
+
+**AST Traversal & Size Check:** The chunker walks the AST looking for semantic boundaries. Each potential chunk is checked against size constraints—chunks within limits are extracted directly, while oversized chunks are split into smaller units.
+
+**Gap Filling:** After extracting semantic chunks, gap filling captures any code between them (imports, constants, comments) that would otherwise be lost.
+
+**Output:** The final result is an array of semantic chunks, each containing the code text along with rich metadata like type, name, line numbers, and parent context.
+
+### Step 1: Define Semantic Node Types
+
+This module defines a mapping between programming languages and their AST node types that represent semantic boundaries. The `SEMANTIC_NODES` constant maps each supported language (JavaScript, TypeScript, Python, Go, Rust) to its meaningful code constructs like functions, classes, and methods. The `getSemanticTypes()` helper function flattens all node types for a given language into a single array, making it easy to check if an AST node represents a semantic boundary during traversal.
+
+**See the implementation in `src/semantic-nodes.ts`.**
+
+### Step 2: The Chunk Data Structure
+
+This module (`src/chunk.ts`) defines the data structure for representing a semantic code chunk:
+
+- **ChunkType** - Union type enumerating all chunk categories (function, class, method, interface, etc.)
+- **ChunkMetadata** - Interface storing context like parent scope, function parameters, return types, and flags for async/exported functions
+- **SemanticChunk** - Main class encapsulating chunk properties with:
+  - `charCount` and `lineCount` computed getters for size tracking
+  - `toString()` method for debugging output
+  - `contextualize(filePath)` method that prepends metadata (file path, parent scope, type, parameters) before the code text—essential for generating embedding-ready text that includes context about where the code lives in the codebase
+
+**See the implementation in `src/chunk.ts`.**
+
+### Step 3: The Core Chunker
+
+This module (`src/chunker.ts`) is the main chunker implementation that orchestrates the entire semantic chunking process:
+
+**Core Methods:**
+- `initialize()` - Loads language grammars from WASM files
+- `chunk()` - Main entry point that parses code and extracts chunks
+- `extractChunks()` - Recursively walks the AST looking for semantic nodes
+- `createChunk()` - Builds a SemanticChunk from an AST node with metadata
+- `splitLargeNode()` - Handles oversized chunks by extracting child nodes
+- `fillGaps()` - Creates block chunks for code between semantic units (imports, constants, comments)
+- `fallbackChunk()` - Provides line-based chunking when AST parsing fails
+
+**Chunk Processing Methods:**
+- `extractMethodsFromClass(classChunk)` - When a class exceeds the max chunk size, this method breaks it down into individual method chunks. Each method retains a reference to its parent class name in metadata, preserving the hierarchical relationship.
+- `addOverlap(chunks, code, overlapLines)` - Adds context lines from neighboring chunks to each chunk's text. This helps retrieval find relevant results when searches span chunk boundaries.
+
+**See the implementation in `src/chunker.ts`.**
+
+### Gap Filling Explained
+
+Gap filling ensures that code between semantic chunks (imports, constants, exports) is not lost during chunking. After extracting functions and classes, the chunker identifies any lines not covered by semantic chunks and packages them as "block" type chunks with `gapFill: true` metadata.
+
+## Putting It All Together
+
+Here's how everything works from start to finish:
+
+1. **You provide code** → Pass your source code and language (e.g., "javascript") to the chunker
+
+2. **Tree-sitter parses it** → The code becomes a tree structure where each node represents a piece of code (function, class, variable, etc.)
+
+3. **Chunker walks the tree** → It looks for nodes that match semantic types (like `function_declaration` or `class_definition`)
+
+4. **Size check** → Each match is checked against your size limits:
+   - Too small? Skip it
+   - Just right? Extract it as a chunk
+   - Too big? Break it down further
+
+5. **Gap filling** → Any code between chunks (imports, constants) gets packaged as "block" chunks
+
+6. **Output** → You get an array of `SemanticChunk` objects, each with:
+   - The code text
+   - Type (function, class, method, etc.)
+   - Name (if it has one)
+   - Line numbers
+   - Metadata (parent scope, parameters, etc.)
+
+7. **Ready for use** → Call `chunk.contextualize(filePath)` to get embedding-ready text with context, or use the raw text directly
+
+That's the complete flow—from raw code to structured, meaningful chunks ready for AI embedding and search.
+
+## Part 3: Running the Example
+
+Run the example to see the semantic chunker in action:
 
 ```bash
-npm run build
 npm start
 ```
 
-### Expected Output
+This runs `src/example.ts` which demonstrates the SemanticChunker with sample JavaScript and Python code. The example initializes the chunker with custom size limits (4000 max, 50 min characters), loads JavaScript and Python language grammars from their WASM files, then processes sample code from both languages.
 
-![Output](./images/image-9.png)
+**Expected Output:**
 
-### Test File Change
+![Example Output](./images/image-1.png)
 
-Open [test-project/src/auth.ts](../../Merkle-Tree-Builder/test-project/src/auth.ts) and add a comment:
+![Example Output 2](./images/image-2.png)
 
-```typescript
-// This is a test comment
-export function login(username: string, password: string): User | null {
-    // ...
-}
-```
+The output shows each chunk's type, name, line range, character count, and metadata—demonstrating how semantic chunking preserves complete functions and classes while extracting meaningful names and parameters.
 
-Save the file. The watcher will detect the change:
+**See the implementation in `src/example.ts`.**
 
-![Output](./images/image-10.png)
+## Summary
 
-The root hash changed because the file content changed!
+In this lab, you learned:
 
-Now try to add and delete a file in the `test-project` directory. You will see the root hash changed and the dirty queue updated.
+| Concept | Description |
+|---------|-------------|
+| **Semantic Chunking** | Splitting code by meaningful boundaries (functions, classes) |
+| **Why It Matters** | Better embeddings, better AI search results |
+| **Node Type Mapping** | Different AST node types for each language |
+| **Size Constraints** | Min/max chunk sizes to balance granularity and context |
+| **Gap Filling** | Handling code between semantic units |
+| **Metadata Extraction** | Parameters, return types, parent scope |
+| **Contextualization** | Adding file/scope info for better embeddings |
 
-### Verify Local Storage
-
-Check `.puku/` directory:
-
-```bash
-cat .puku/merkle-state.json
-cat .puku/dirty-queue.json
-```
-
-You'll see the updated root hash.
-
-## Part 6: Key Concepts
-
-### Merkle Root Comparison
-
-The power of Merkle trees lies in O(1) change detection:
-
-```typescript
-// Client
-const clientRoot = merkleBuilder.loadMerkleState().root;
-
-// Server (hypothetical)
-const serverRoot = await fetchServerMerkleRoot();
-
-if (clientRoot === serverRoot) {
-    console.log('Nothing changed - skip sync');
-} else {
-    console.log('Changes detected - process dirty queue');
-    const dirtyFiles = merkleBuilder.getDirtyQueue().dirtyFiles;
-    // Send only dirty files to server
-}
-```
-
-This single comparison tells you if ANY of the thousands of files changed.
-
-### Why Include File Path in Hash?
-
-```typescript
-// Without path
-hash('function login() {}') = 'abc123'
-
-// Two different files with same content produce same hash
-// src/auth.ts → 'abc123'
-// test/auth.ts → 'abc123'  Problem!
-
-// With path
-hash('src/auth.ts' + 'function login() {}') = 'def456'
-hash('test/auth.ts' + 'function login() {}') = 'ghi789'  Unique
-```
-
-Including the path ensures location matters—identical code in different files is tracked separately.
-
-### Binary Tree Structure
-
-With 10 files, the tree has 4 levels:
-
-```
-Level 3 (Root):      1 node
-Level 2:             2 nodes
-Level 1:             5 nodes
-Level 0 (Leaves):   10 nodes
-```
-
-To update one file, you only recompute:
-- 1 leaf hash (the changed file)
-- ~3-4 parent hashes (path to root)
-
-Instead of recomputing all 10 file hashes!
-
-### The Dirty Queue Pattern
-
-The dirty queue is a critical optimization that enables **batched syncing**:
-
-![Dirty Queue Pattern](./images/infra-6.svg)
-
-This pattern:
-- Reduces server load by **100x** (sync every 10 min vs every save)
-- Batches multiple changes efficiently
-- Persists across app restarts (`.puku/dirty-queue.json`)
-
-### Complexity Analysis
-
-| Operation | Without Merkle Tree | With Merkle Tree |
-|-----------|-------------------|-----------------|
-| **Initial Build** | O(n) hash all files | O(n) hash all files + O(n) build tree |
-| **Change Detection** | O(n) compare all hashes | O(1) compare root hash |
-| **Update After Change** | O(n) rehash all | O(log n) update path to root |
-| **Space Complexity** | O(n) store file hashes | O(n) store tree nodes |
-
-The **O(1) change detection** is the killer feature—it makes the overhead of building the tree worthwhile.
-
-## Conclusion
-
-You've built a Merkle tree that enables O(1) change detection—detecting changes across thousands of files with a single root hash comparison. The complete pipeline (file save → watcher → hash update → root comparison → dirty queue) provides 1000x efficiency improvement over naive approaches.
-
-This same architecture powers Git commits, Blockchain verification, VS Code/Cursor indexing, and Bazel/Nx build caching. The Merkle root comparison is the gateway to the next step: chunk-level hashing for incremental indexing of large codebases.
+By building this semantic chunker, you've taken a crucial step toward creating high-quality AI-powered code search and retrieval systems that understand code structure and meaning.
