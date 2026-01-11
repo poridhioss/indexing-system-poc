@@ -1,30 +1,40 @@
 import * as parcelWatcher from '@parcel/watcher';
-import * as fs from 'fs';
 import * as path from 'path';
 import { MerkleTreeBuilder } from './merkle-tree.js';
 
 export interface WatcherOptions {
-    watchPath?: string;
+    /**
+     * The root directory of the project to watch
+     * This is used as the base for all relative paths
+     */
+    projectRoot: string;
     ignored?: string[];
     extensions?: string[];
-    onFileChanged?: (filePath: string, newRoot: string) => void;
+    /**
+     * Callback when a file changes
+     * @param relativePath - The RELATIVE path of the changed file
+     * @param newRoot - The new Merkle root hash
+     */
+    onFileChanged?: (relativePath: string, newRoot: string) => void;
     onReady?: () => void;
     onError?: (err: Error) => void;
 }
 
 export class MerkleWatcher {
-    private watchPath: string;
+    private projectRoot: string;
     private ignored: string[];
     private extensions: string[];
     private subscription: parcelWatcher.AsyncSubscription | null = null;
     private merkleBuilder: MerkleTreeBuilder;
 
-    private onFileChanged: (filePath: string, newRoot: string) => void;
+    private onFileChanged: (relativePath: string, newRoot: string) => void;
     private onReady: () => void;
     private onError: (err: Error) => void;
 
-    constructor(options: WatcherOptions = {}) {
-        this.watchPath = options.watchPath || './test-project';
+    constructor(options: WatcherOptions) {
+        // Resolve projectRoot to absolute path
+        this.projectRoot = path.resolve(options.projectRoot);
+
         this.ignored = options.ignored || [
             '**/node_modules/**',
             '**/.git/**',
@@ -35,20 +45,34 @@ export class MerkleWatcher {
         ];
         this.extensions = options.extensions || ['.js', '.ts', '.jsx', '.tsx'];
 
-        this.onFileChanged = options.onFileChanged || this._defaultHandler;
+        this.onFileChanged = options.onFileChanged || this._defaultHandler.bind(this);
         this.onReady = options.onReady || (() => {});
         this.onError = options.onError || ((err) => console.error('Watcher error:', err));
 
-        this.merkleBuilder = new MerkleTreeBuilder();
+        // Create MerkleTreeBuilder with projectRoot
+        this.merkleBuilder = new MerkleTreeBuilder(this.projectRoot);
     }
 
-    private _defaultHandler(filePath: string, newRoot: string): void {
-        console.log(`[MERKLE UPDATE] ${filePath}`);
+    private _defaultHandler(relativePath: string, newRoot: string): void {
+        console.log(`[MERKLE UPDATE] ${relativePath}`);
         console.log(`               New root: ${newRoot.substring(0, 16)}...`);
     }
 
+    /**
+     * Convert absolute path to relative path
+     * Normalizes to forward slashes for cross-platform consistency
+     */
+    private _toRelativePath(absolutePath: string): string {
+        const relative = path.relative(this.projectRoot, absolutePath);
+        // Normalize to forward slashes for consistency
+        return relative.split(path.sep).join('/');
+    }
+
     private _shouldIgnore(filePath: string): boolean {
-        const relativePath = path.relative(this.watchPath, filePath);
+        // Use relative path for pattern matching
+        const relativePath = path.isAbsolute(filePath)
+            ? this._toRelativePath(filePath)
+            : filePath;
 
         for (const pattern of this.ignored) {
             const regexPattern = pattern
@@ -57,7 +81,7 @@ export class MerkleWatcher {
                 .replace(/\//g, '[\\\\/]');
 
             const regex = new RegExp(regexPattern);
-            if (regex.test(relativePath) || regex.test(filePath)) {
+            if (regex.test(relativePath)) {
                 return true;
             }
         }
@@ -73,8 +97,8 @@ export class MerkleWatcher {
      * Build initial Merkle tree
      */
     async buildInitialTree(): Promise<string> {
-        console.log(`Building initial Merkle tree for: ${this.watchPath}`);
-        const tree = this.merkleBuilder.buildFromDirectory(this.watchPath, this.extensions);
+        console.log(`Building initial Merkle tree for: ${this.projectRoot}`);
+        const tree = this.merkleBuilder.buildFromDirectory(this.extensions);
         console.log(`Merkle root: ${tree.hash}`);
         console.log('\nTree structure:');
         this.merkleBuilder.printTree(tree);
@@ -83,6 +107,9 @@ export class MerkleWatcher {
 
     /**
      * Start watching for file changes
+     *
+     * NOTE: @parcel/watcher provides ABSOLUTE paths in events.
+     * We convert them to relative paths before passing to callbacks.
      */
     async start(): Promise<this> {
         // Build initial tree if not exists
@@ -93,11 +120,12 @@ export class MerkleWatcher {
             console.log(`Loaded existing Merkle state. Root: ${state.root.substring(0, 16)}...`);
         }
 
-        console.log(`\nWatching directory: ${this.watchPath}`);
+        console.log(`\nWatching directory: ${this.projectRoot}`);
 
         // Subscribe to file system events
+        // NOTE: parcelWatcher provides ABSOLUTE paths - we handle conversion internally
         this.subscription = await parcelWatcher.subscribe(
-            this.watchPath,
+            this.projectRoot,
             (err: Error | null, events: parcelWatcher.Event[]) => {
                 if (err) {
                     this.onError(err);
@@ -105,33 +133,41 @@ export class MerkleWatcher {
                 }
 
                 for (const event of events) {
-                    const filePath = event.path;
+                    // parcelWatcher provides ABSOLUTE path
+                    const absolutePath = event.path;
 
                     // Filter
-                    if (!this._shouldWatch(filePath) || this._shouldIgnore(filePath)) {
+                    if (!this._shouldWatch(absolutePath) || this._shouldIgnore(absolutePath)) {
                         continue;
                     }
 
+                    // Convert to relative path for display and storage
+                    const relativePath = this._toRelativePath(absolutePath);
+
                     if (event.type === 'create' || event.type === 'update') {
                         // File created or modified
-                        console.log(`\n[${event.type.toUpperCase()}] ${filePath}`);
+                        console.log(`\n[${event.type.toUpperCase()}] ${relativePath}`);
 
                         const oldRoot = this.getCurrentRoot();
-                        const newRoot = this.merkleBuilder.updateFileHash(filePath);
+                        // Pass absolute path - MerkleTreeBuilder will convert internally
+                        const newRoot = this.merkleBuilder.updateFileHash(absolutePath);
 
                         // Only fire callback if root actually changed
                         if (newRoot && oldRoot !== newRoot) {
-                            this.onFileChanged(filePath, newRoot);
+                            // Pass RELATIVE path to callback
+                            this.onFileChanged(relativePath, newRoot);
                         }
                     } else if (event.type === 'delete') {
-                        console.log(`\n[DELETE] ${filePath}`);
+                        console.log(`\n[DELETE] ${relativePath}`);
 
                         const oldRoot = this.getCurrentRoot();
-                        const newRoot = this.merkleBuilder.deleteFile(filePath);
+                        // Pass absolute path - MerkleTreeBuilder will convert internally
+                        const newRoot = this.merkleBuilder.deleteFile(absolutePath);
 
                         // Fire callback if deletion changed the tree
                         if (newRoot && oldRoot !== newRoot) {
-                            this.onFileChanged(filePath, newRoot);
+                            // Pass RELATIVE path to callback
+                            this.onFileChanged(relativePath, newRoot);
                         }
                     }
                 }
@@ -162,7 +198,7 @@ export class MerkleWatcher {
     }
 
     /**
-     * Get dirty files queue
+     * Get dirty files queue (contains RELATIVE paths)
      */
     getDirtyFiles(): string[] {
         const queue = this.merkleBuilder.getDirtyQueue();
@@ -170,22 +206,16 @@ export class MerkleWatcher {
     }
 
     /**
-     * Simulate server sync (clear dirty queue)
+     * Get the project root path
      */
-    // simulateSync(): void {
-    //     const queue = this.merkleBuilder.getDirtyQueue();
-    //     if (queue && queue.dirtyFiles.length > 0) {
-    //         console.log('\n=== SIMULATING SERVER SYNC ===');
-    //         console.log(`Syncing ${queue.dirtyFiles.length} dirty files:`);
-    //         queue.dirtyFiles.forEach(f => console.log(`  - ${f}`));
-    //         console.log('Server would now:');
-    //         console.log('  1. Compare chunk hashes for these files');
-    //         console.log('  2. Re-embed only changed chunks');
-    //         console.log('  3. Update vector database');
-    //         this.merkleBuilder.clearDirtyQueue();
-    //         console.log('Dirty queue cleared.');
-    //     } else {
-    //         console.log('\nNo dirty files to sync.');
-    //     }
-    // }
+    getProjectRoot(): string {
+        return this.projectRoot;
+    }
+
+    /**
+     * Get the MerkleTreeBuilder instance
+     */
+    getMerkleBuilder(): MerkleTreeBuilder {
+        return this.merkleBuilder;
+    }
 }

@@ -1,4 +1,5 @@
 import { Parser, Language, Node } from 'web-tree-sitter';
+import * as path from 'path';
 import { getSemanticTypes } from './semantic-nodes';
 import { HashedChunk, ChunkType, ChunkMetadata, ChunkReference, FileSyncPayload } from './hashed-chunk';
 
@@ -38,14 +39,48 @@ export type LanguageConfigs = Record<string, string>;
  * Key difference from SemanticChunker:
  * - Returns HashedChunk (hash + reference) instead of SemanticChunk (code included)
  * - Code is read on-demand using reference when needed
+ * - All paths stored as RELATIVE paths (relative to projectRoot)
  */
 export class ChunkHasher {
     private config: ChunkHasherConfig;
+    private projectRoot: string;
     private parser: Parser | null = null;
     private languages: Map<string, Language> = new Map();
 
-    constructor(config: Partial<ChunkHasherConfig> = {}) {
+    /**
+     * Create a new ChunkHasher
+     * @param projectRoot - The root directory of the project (used to compute relative paths)
+     * @param config - Optional configuration overrides
+     */
+    constructor(projectRoot: string, config: Partial<ChunkHasherConfig> = {}) {
+        this.projectRoot = path.resolve(projectRoot);
         this.config = { ...DEFAULT_CONFIG, ...config };
+    }
+
+    /**
+     * Convert absolute path to relative path (relative to projectRoot)
+     * Normalizes to forward slashes for cross-platform consistency
+     */
+    toRelativePath(absolutePath: string): string {
+        const relative = path.relative(this.projectRoot, absolutePath);
+        // Normalize to forward slashes for consistency across platforms
+        return relative.split(path.sep).join('/');
+    }
+
+    /**
+     * Convert relative path to absolute path
+     */
+    toAbsolutePath(relativePath: string): string {
+        // Handle both forward slashes and backslashes
+        const normalized = relativePath.split('/').join(path.sep);
+        return path.join(this.projectRoot, normalized);
+    }
+
+    /**
+     * Get the project root path
+     */
+    getProjectRoot(): string {
+        return this.projectRoot;
     }
 
     /**
@@ -67,15 +102,20 @@ export class ChunkHasher {
      *
      * @param code - Source code content
      * @param language - Language identifier (javascript, python, etc.)
-     * @param filePath - Absolute path to source file (for reference)
+     * @param filePath - Can be absolute OR relative path (will be converted to relative)
      * @returns Array of hashed chunks (hash + metadata, no code stored)
      */
     hashFile(code: string, language: string, filePath: string): HashedChunk[] {
+        // Convert to relative path if absolute
+        const relativePath = path.isAbsolute(filePath)
+            ? this.toRelativePath(filePath)
+            : filePath;
+
         const langGrammar = this.languages.get(language);
 
         if (!langGrammar || !this.parser) {
             console.warn(`Language '${language}' not loaded, using fallback`);
-            return this.fallbackHash(code, language, filePath);
+            return this.fallbackHash(code, language, relativePath);
         }
 
         // Parse the code
@@ -84,26 +124,33 @@ export class ChunkHasher {
 
         if (!tree) {
             console.warn(`Failed to parse code for language '${language}', using fallback`);
-            return this.fallbackHash(code, language, filePath);
+            return this.fallbackHash(code, language, relativePath);
         }
 
         // Extract and hash semantic chunks
         const chunks: HashedChunk[] = [];
         const semanticTypes = getSemanticTypes(language);
 
-        this.extractAndHashChunks(tree.rootNode, code, language, filePath, semanticTypes, chunks);
+        this.extractAndHashChunks(tree.rootNode, code, language, relativePath, semanticTypes, chunks);
 
         // Fill gaps between chunks
-        return this.fillGaps(chunks, code, language, filePath);
+        return this.fillGaps(chunks, code, language, relativePath);
     }
 
     /**
      * Create a file sync payload for Phase 2 (metadata exchange)
      * This is what gets sent to the server - hashes only, no code
+     * @param chunks - Array of hashed chunks
+     * @param filePath - Can be absolute OR relative path (will be converted to relative)
      */
     createSyncPayload(chunks: HashedChunk[], filePath: string): FileSyncPayload {
+        // Convert to relative path if absolute
+        const relativePath = path.isAbsolute(filePath)
+            ? this.toRelativePath(filePath)
+            : filePath;
+
         return {
-            filePath,  // Could be obfuscated before sending
+            relativePath,  // Could be obfuscated before sending
             chunks: chunks.map(chunk => chunk.toSyncPayload()),
         };
     }
@@ -165,7 +212,7 @@ export class ChunkHasher {
         node: Node,
         code: string,
         language: string,
-        filePath: string,
+        relativePath: string,
         parentName: string | null
     ): HashedChunk {
         const name = this.getNodeName(node);
@@ -176,9 +223,9 @@ export class ChunkHasher {
             metadata.parent = parentName;
         }
 
-        // Create reference to locate code on disk
+        // Create reference to locate code on disk (uses RELATIVE path)
         const reference: ChunkReference = {
-            filePath,
+            relativePath,
             lineStart: node.startPosition.row + 1,
             lineEnd: node.endPosition.row + 1,
             charStart: node.startIndex,
@@ -291,7 +338,7 @@ export class ChunkHasher {
         node: Node,
         code: string,
         language: string,
-        filePath: string,
+        relativePath: string,
         semanticTypes: string[]
     ): HashedChunk[] {
         const chunks: HashedChunk[] = [];
@@ -300,7 +347,7 @@ export class ChunkHasher {
             const child = node.namedChild(i);
             if (child && semanticTypes.includes(child.type) && child.text.length >= this.config.minChunkSize) {
                 const parentName = this.getNodeName(node);
-                const chunk = this.createHashedChunk(child, code, language, filePath, parentName);
+                const chunk = this.createHashedChunk(child, code, language, relativePath, parentName);
                 chunks.push(chunk);
             }
         }
@@ -311,9 +358,9 @@ export class ChunkHasher {
     /**
      * Fill gaps between semantic chunks with block chunks
      */
-    private fillGaps(chunks: HashedChunk[], code: string, language: string, filePath: string): HashedChunk[] {
+    private fillGaps(chunks: HashedChunk[], code: string, language: string, relativePath: string): HashedChunk[] {
         if (chunks.length === 0) {
-            return this.fallbackHash(code, language, filePath);
+            return this.fallbackHash(code, language, relativePath);
         }
 
         // Sort chunks by line number
@@ -337,7 +384,7 @@ export class ChunkHasher {
                     const charEnd = this.getCharOffset(lines, gapEndLine + 1) - 1;
 
                     const reference: ChunkReference = {
-                        filePath,
+                        relativePath,
                         lineStart: gapStartLine,
                         lineEnd: gapEndLine,
                         charStart,
@@ -369,7 +416,7 @@ export class ChunkHasher {
                 const charEnd = code.length;
 
                 const reference: ChunkReference = {
-                    filePath,
+                    relativePath,
                     lineStart: currentLine,
                     lineEnd: lines.length,
                     charStart,
@@ -404,7 +451,7 @@ export class ChunkHasher {
     /**
      * Fallback to line-based chunking when AST parsing fails
      */
-    private fallbackHash(code: string, language: string, filePath: string): HashedChunk[] {
+    private fallbackHash(code: string, language: string, relativePath: string): HashedChunk[] {
         const chunks: HashedChunk[] = [];
         const lines = code.split('\n');
         const { fallbackLineSize, fallbackOverlap, minChunkSize } = this.config;
@@ -420,7 +467,7 @@ export class ChunkHasher {
                 const charEnd = this.getCharOffset(lines, lineEnd + 1) - 1;
 
                 const reference: ChunkReference = {
-                    filePath,
+                    relativePath,
                     lineStart,
                     lineEnd,
                     charStart,

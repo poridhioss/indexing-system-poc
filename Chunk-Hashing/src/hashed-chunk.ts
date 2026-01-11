@@ -25,7 +25,7 @@ export interface ChunkMetadata {
  * Used during Phase 3 when server requests actual code
  */
 export interface ChunkReference {
-    filePath: string;     // Absolute path to source file
+    relativePath: string; // RELATIVE path to source file (relative to project root)
     lineStart: number;    // 1-indexed start line
     lineEnd: number;      // 1-indexed end line
     charStart: number;    // Character offset from file start
@@ -98,7 +98,7 @@ export class HashedChunk {
      * Create a summary string for debugging
      */
     toString(): string {
-        return `[${this.type}] ${this.name ?? '(anonymous)'} @ ${this.reference.filePath}:${this.reference.lineStart}-${this.reference.lineEnd} (hash: ${this.hash.substring(0, 8)}...)`;
+        return `[${this.type}] ${this.name ?? '(anonymous)'} @ ${this.reference.relativePath}:${this.reference.lineStart}-${this.reference.lineEnd} (hash: ${this.hash.substring(0, 8)}...)`;
     }
 
     /**
@@ -132,6 +132,6 @@ export interface ChunkSyncPayload {
  * File-level sync payload containing all chunk hashes
  */
 export interface FileSyncPayload {
-    filePath: string;         // Can be obfuscated before sending
+    relativePath: string;     // RELATIVE path (can be obfuscated before sending)
     chunks: ChunkSyncPayload[];
 }

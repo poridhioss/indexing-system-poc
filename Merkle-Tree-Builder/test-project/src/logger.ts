@@ -4,7 +4,7 @@ export enum LogLevel {
     WARN = 2,
     ERROR = 3,
 }
-
+//
 export class Logger {
     private level: LogLevel;
     private prefix: string;

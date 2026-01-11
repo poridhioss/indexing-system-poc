@@ -16,7 +16,7 @@ export function login(username: string, password: string): User | null {
     }
     return null;
 }
-
+// This is a test comment
 export function logout(userId: string): void {
     console.log(`User ${userId} logged out`);
 }
