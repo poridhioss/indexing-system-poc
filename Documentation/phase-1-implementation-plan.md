@@ -4,8 +4,6 @@
 
 This document outlines the complete Phase 1 implementation plan for the POC Indexing Worker. Phase 1 focuses on **core sync infrastructure with KV only** (no AI processing). AI summarization and embeddings will be added in Phase 2.
 
----
-
 ## Architecture Overview
 
 ```mermaid
@@ -15,13 +13,13 @@ flowchart TB
         MT[Merkle Tree Builder]
         CH[Chunk Hasher]
         SC[Sync Client]
-        LStore[".puku/merkle-state.json"]
+        LStore[".puku/"]
     end
 
     subgraph Server["Cloudflare Worker"]
         API[Hono API]
         MStore[KV: merkleRoot]
-        HStore[KV: chunkHashes]
+        HStore[KV: chunkHash]
     end
 
     FW --> MT
@@ -33,7 +31,36 @@ flowchart TB
     API --> HStore
 ```
 
----
+## Cache Strategy
+
+### Hash-Only Storage (Inspired by Cursor)
+
+We use **hash-based caching** where embeddings/data are stored by chunk hash only - not tied to any specific project. This enables cross-project cache sharing.
+
+```mermaid
+flowchart LR
+    subgraph Projects["Different Projects"]
+        PA["Project A<br/>login() → hash abc123"]
+        PB["Project B<br/>login() → same code → hash abc123"]
+    end
+
+    subgraph KV["Server KV (Shared)"]
+        CH["chunkHash:abc123 → '1'<br/>(shared by both projects)"]
+    end
+
+    PA --> CH
+    PB --> CH
+```
+
+**Benefits:**
+- Cross-project cache sharing (same code = same hash = shared cache)
+- Simpler sync logic (no per-project tracking)
+- Cloudflare KV TTL handles cleanup automatically
+
+**TTL Strategy:**
+- Phase 1: 30-day TTL for chunk hashes (small data)
+- Phase 2: 7-14 day TTL for embeddings (larger data)
+- TTL refreshed on every access
 
 ## Complete Flow Diagrams
 
@@ -46,17 +73,20 @@ sequenceDiagram
     participant S as Server (KV)
 
     U->>C: Opens project first time
+    C->>C: Check .puku/ exists? → No
     C->>C: Scan ALL files
     C->>C: Build Merkle tree
     C->>C: Chunk ALL files
     C->>C: Compute hashes
 
-    C->>S: POST /index/init<br/>{merkleRoot, chunks[] with code}
-    S->>S: Store merkleRoot in KV
-    S->>S: Store each chunkHash in KV
+    C->>S: POST /v1/index/init
+    S->>S: Store merkleRoot:{userId}:{projectId}
+    S->>S: Store chunkHash:{hash} with TTL
     S-->>C: {status: "indexed", chunksStored: N}
 
-    C->>C: Save merkle-state.json locally
+    C->>C: Generate projectId (UUID)
+    C->>C: Save .puku/project.json
+    C->>C: Save .puku/merkle-state.json
 ```
 
 ### Flow 2: Project Reopen (No Changes)
@@ -68,12 +98,14 @@ sequenceDiagram
     participant S as Server (KV)
 
     U->>C: Reopens project
+    C->>C: Check .puku/ exists? → Yes
+    C->>C: Load projectId from .puku/project.json
     C->>C: Scan ALL files (unavoidable)
     C->>C: Rebuild Merkle tree
     C->>C: Re-chunk ALL files (unavoidable)
 
-    C->>S: POST /index/check<br/>{merkleRoot: "abc123"}
-    S->>S: Compare with stored root
+    C->>S: POST /v1/index/check
+    S->>S: Compare merkle roots
     S-->>C: {changed: false}
 
     Note over C: Done! No sync needed
@@ -88,23 +120,26 @@ sequenceDiagram
     participant S as Server (KV)
 
     U->>C: Reopens project (files changed offline)
+    C->>C: Load projectId from .puku/project.json
     C->>C: Scan ALL files
     C->>C: Rebuild Merkle tree (NEW root)
     C->>C: Re-chunk ALL files
 
-    C->>S: POST /index/check<br/>{merkleRoot: "xyz789"}
-    S->>S: Compare: "xyz789" ≠ "abc123"
-    S-->>C: {changed: true, serverRoot: "abc123"}
+    C->>S: POST /v1/index/check
+    S-->>C: {changed: true, serverRoot: "old-root"}
 
-    C->>S: POST /index/sync (phase 1)<br/>{phase: 1, chunks: [all hashes]}
+    C->>S: POST /v1/index/sync (phase 1)
     S->>S: Check each hash in KV
+    S->>S: Refresh TTL for existing hashes
     S-->>C: {needed: ["hash5"], cached: ["hash1","hash2",...]}
 
     C->>C: Read code for needed chunks only
-    C->>S: POST /index/sync (phase 2)<br/>{phase: 2, chunks: [{hash, code}]}
-    S->>S: Store new hash in KV
+    C->>S: POST /v1/index/sync (phase 2)
+    S->>S: Store new hashes with TTL
     S->>S: Update merkleRoot
     S-->>C: {status: "stored", received: ["hash5"]}
+
+    C->>C: Update .puku/merkle-state.json
 ```
 
 ### Flow 4: Live Editing (Watcher Running)
@@ -124,89 +159,218 @@ sequenceDiagram
 
     Note over C: Debounce/batch changes...
 
-    C->>S: POST /index/sync (phase 1)<br/>{chunks: [changed chunk hashes]}
+    C->>S: POST /v1/index/sync (phase 1)
     S-->>C: {needed: ["newHash"], cached: []}
 
-    C->>S: POST /index/sync (phase 2)<br/>{chunks: [{hash, code}]}
+    C->>S: POST /v1/index/sync (phase 2)
+    S->>S: Store new hash with TTL
+    S->>S: Update merkleRoot
     S-->>C: {status: "stored"}
 
     C->>C: Clear dirty queue
+    C->>C: Update .puku/merkle-state.json
 ```
 
 ---
 
-## API Endpoints
+## API Reference
 
-### 1. POST `/v1/index/init` - First Time Indexing
+### Base URL
 
-**When Called**:
-- First time user opens project
-- Server has no data (`/check` returns `serverRoot: null`)
+```
+Development: http://localhost:8787
+Production:  https://indexing-poc.{account}.workers.dev
+```
+
+### Authentication
+
+All requests require `Authorization` header with user token:
+
+```
+Authorization: Bearer {userToken}
+```
+
+Server extracts `userId` from token for KV key namespacing.
+
+---
+
+### 1. POST `/v1/index/init`
+
+**Purpose**: First-time full indexing when user opens a new project.
+
+**When to Call**:
+- First time user opens project (no `.puku/project.json` exists)
+- Server returns `serverRoot: null` on `/check`
 - User manually triggers re-index
 
-**Request:**
+#### Request
+
+**Headers:**
+```
+Content-Type: application/json
+Authorization: Bearer {userToken}
+```
+
+**Body:**
+```typescript
+interface IndexInitRequest {
+  projectId: string;        // UUID generated by client
+  merkleRoot: string;       // SHA-256 hash of merkle tree root
+  chunks: InitChunk[];      // All chunks with code
+}
+
+interface InitChunk {
+  hash: string;             // SHA-256 hash of chunk content
+  code: string;             // Actual code content
+  type: ChunkType;          // "function" | "class" | "method" | "interface" | "type" | "enum" | "block"
+  name: string | null;      // Function/class name or null for anonymous
+  languageId: string;       // "typescript" | "javascript" | "python" | etc.
+  lines: [number, number];  // [startLine, endLine] (1-indexed)
+  charCount: number;        // Character count of code
+}
+```
+
+**Example:**
 ```json
 {
-  "merkleRoot": "abc123...",
+  "projectId": "550e8400-e29b-41d4-a716-446655440000",
+  "merkleRoot": "a1b2c3d4e5f6...",
   "chunks": [
     {
-      "hash": "chunk-hash-1",
+      "hash": "abc123def456...",
+      "code": "export function login(username: string, password: string): User | null {\n  // auth logic\n  return user;\n}",
       "type": "function",
       "name": "login",
+      "languageId": "typescript",
       "lines": [10, 25],
-      "charCount": 500,
-      "code": "function login() { ... }",
-      "languageId": "typescript"
+      "charCount": 245
+    },
+    {
+      "hash": "789xyz012...",
+      "code": "export class AuthService {\n  private users: Map<string, User>;\n  // ...\n}",
+      "type": "class",
+      "name": "AuthService",
+      "languageId": "typescript",
+      "lines": [30, 85],
+      "charCount": 1250
     }
   ]
 }
 ```
 
-**Response:**
+#### Response
+
+**Success (200 OK):**
+```typescript
+interface IndexInitResponse {
+  status: "indexed";
+  merkleRoot: string;       // Echo back the stored root
+  chunksStored: number;     // Number of chunks stored
+  chunksSkipped: number;    // Already existed (TTL refreshed)
+}
+```
+
+**Example:**
 ```json
 {
   "status": "indexed",
-  "merkleRoot": "abc123...",
-  "chunksStored": 1
+  "merkleRoot": "a1b2c3d4e5f6...",
+  "chunksStored": 2,
+  "chunksSkipped": 0
 }
 ```
 
-**Server Actions:**
-- Store `merkleRoot:{userId}` → `"abc123..."`
-- Store `chunkHash:{hash}` → `"1"` for each chunk
+**Error (400 Bad Request):**
+```json
+{
+  "error": "Invalid request",
+  "message": "merkleRoot is required"
+}
+```
+
+**Error (401 Unauthorized):**
+```json
+{
+  "error": "Unauthorized",
+  "message": "Invalid or missing token"
+}
+```
+
+#### Server Actions
+
+1. Validate request body
+2. Extract `userId` from auth token
+3. Store merkle root:
+   ```
+   KV.put(`merkleRoot:{userId}:{projectId}`, merkleRoot)
+   ```
+4. For each chunk:
+   ```
+   KV.put(`chunkHash:{hash}`, "1", { expirationTtl: 2592000 }) // 30 days
+   ```
+5. Return success response
 
 ---
 
-### 2. POST `/v1/index/check` - Change Detection
+### 2. POST `/v1/index/check`
 
-**When Called**:
+**Purpose**: Quick O(1) check if project needs sync.
+
+**When to Call**:
 - On project open (after rebuilding local Merkle tree)
-- Periodically during session
+- Periodically during active session (every 3-5 minutes)
 
-**Request:**
-```json
-{
-  "merkleRoot": "abc123..."
+#### Request
+
+**Headers:**
+```
+Content-Type: application/json
+Authorization: Bearer {userToken}
+```
+
+**Body:**
+```typescript
+interface IndexCheckRequest {
+  projectId: string;        // Project UUID
+  merkleRoot: string;       // Current local merkle root
 }
 ```
 
-**Response (no change):**
+**Example:**
+```json
+{
+  "projectId": "550e8400-e29b-41d4-a716-446655440000",
+  "merkleRoot": "a1b2c3d4e5f6..."
+}
+```
+
+#### Response
+
+**No Change (200 OK):**
+```typescript
+interface IndexCheckResponse {
+  changed: boolean;         // false = in sync
+  serverRoot: string;       // Server's stored root
+}
+```
+
+**Example:**
 ```json
 {
   "changed": false,
-  "serverRoot": "abc123..."
+  "serverRoot": "a1b2c3d4e5f6..."
 }
 ```
 
-**Response (change detected):**
+**Change Detected (200 OK):**
 ```json
 {
   "changed": true,
-  "serverRoot": "xyz789..."
+  "serverRoot": "xyz789abc..."
 }
 ```
 
-**Response (no server data):**
+**No Server Data (200 OK):**
 ```json
 {
   "changed": true,
@@ -214,105 +378,262 @@ sequenceDiagram
 }
 ```
 
+When `serverRoot` is `null`, client should call `/init` instead of `/sync`.
+
+#### Server Actions
+
+1. Extract `userId` from auth token
+2. Get stored root:
+   ```
+   storedRoot = KV.get(`merkleRoot:{userId}:{projectId}`)
+   ```
+3. Compare with request `merkleRoot`
+4. Return comparison result
+
 ---
 
-### 3. POST `/v1/index/sync` - Two-Phase Sync
+### 3. POST `/v1/index/sync`
+
+**Purpose**: Two-phase sync protocol for efficient updates.
 
 #### Phase 1: Hash Check
 
-**Purpose**: Server tells client which chunks need code
+**Purpose**: Server tells client which chunks are new vs cached.
 
 **Request:**
+```typescript
+interface IndexSyncPhase1Request {
+  phase: 1;
+  projectId: string;
+  merkleRoot: string;           // New merkle root after changes
+  chunks: SyncChunkMeta[];      // Metadata only, NO code
+}
+
+interface SyncChunkMeta {
+  hash: string;                 // Chunk content hash
+  type: ChunkType;
+  name: string | null;
+  lines: [number, number];
+  charCount: number;
+}
+```
+
+**Example:**
 ```json
 {
   "phase": 1,
-  "merkleRoot": "abc123...",
+  "projectId": "550e8400-e29b-41d4-a716-446655440000",
+  "merkleRoot": "newroot123...",
   "chunks": [
     {
-      "hash": "chunk-hash-1",
+      "hash": "abc123...",
       "type": "function",
       "name": "login",
       "lines": [10, 25],
-      "charCount": 500
+      "charCount": 245
     },
     {
-      "hash": "chunk-hash-2",
+      "hash": "def456...",
+      "type": "function",
+      "name": "logout",
+      "lines": [30, 40],
+      "charCount": 180
+    },
+    {
+      "hash": "newxyz...",
       "type": "class",
       "name": "AuthService",
-      "lines": [30, 80],
-      "charCount": 1200
+      "lines": [45, 120],
+      "charCount": 1500
     }
   ]
 }
 ```
 
 **Response:**
-```json
-{
-  "needed": ["chunk-hash-2"],
-  "cached": ["chunk-hash-1"]
+```typescript
+interface IndexSyncPhase1Response {
+  needed: string[];     // Hashes that need code (not in cache)
+  cached: string[];     // Hashes already in cache (TTL refreshed)
 }
 ```
 
+**Example:**
+```json
+{
+  "needed": ["newxyz..."],
+  "cached": ["abc123...", "def456..."]
+}
+```
+
+**Server Actions (Phase 1):**
+1. For each chunk hash:
+   - Check if `chunkHash:{hash}` exists in KV
+   - If exists: add to `cached`, refresh TTL
+   - If not exists: add to `needed`
+2. Return categorized lists
+
+---
+
 #### Phase 2: Code Transfer
 
-**Purpose**: Client sends code only for needed chunks
+**Purpose**: Client sends code only for chunks server doesn't have.
 
 **Request:**
+```typescript
+interface IndexSyncPhase2Request {
+  phase: 2;
+  projectId: string;
+  merkleRoot: string;           // Same as phase 1
+  chunks: SyncChunkWithCode[];  // Only the needed chunks
+}
+
+interface SyncChunkWithCode {
+  hash: string;
+  code: string;                 // Actual code content
+  type: ChunkType;
+  name: string | null;
+  languageId: string;
+  lines: [number, number];
+  charCount: number;
+}
+```
+
+**Example:**
 ```json
 {
   "phase": 2,
-  "merkleRoot": "abc123...",
+  "projectId": "550e8400-e29b-41d4-a716-446655440000",
+  "merkleRoot": "newroot123...",
   "chunks": [
     {
-      "hash": "chunk-hash-2",
-      "code": "class AuthService { ... }",
+      "hash": "newxyz...",
+      "code": "export class AuthService {\n  // updated implementation\n}",
       "type": "class",
       "name": "AuthService",
-      "languageId": "typescript"
+      "languageId": "typescript",
+      "lines": [45, 120],
+      "charCount": 1500
     }
   ]
 }
 ```
 
-**Response (Phase 1 POC - no AI):**
+**Response (Phase 1 POC - No AI):**
+```typescript
+interface IndexSyncPhase2Response {
+  status: "stored";
+  received: string[];           // Hashes successfully stored
+  merkleRoot: string;           // Confirmed new root
+  message: string;              // Status message
+}
+```
+
+**Example:**
 ```json
 {
   "status": "stored",
-  "received": ["chunk-hash-2"],
+  "received": ["newxyz..."],
+  "merkleRoot": "newroot123...",
   "message": "Chunks stored. AI processing disabled in Phase 1."
+}
+```
+
+**Response (Phase 2 POC - With AI):**
+```json
+{
+  "status": "processed",
+  "received": ["newxyz..."],
+  "merkleRoot": "newroot123...",
+  "summaries": {
+    "newxyz...": "AuthService class handles user authentication with login/logout methods..."
+  },
+  "message": "Chunks processed with AI summarization."
+}
+```
+
+**Server Actions (Phase 2):**
+1. Store each chunk hash with TTL:
+   ```
+   KV.put(`chunkHash:{hash}`, "1", { expirationTtl: 2592000 })
+   ```
+2. Update merkle root:
+   ```
+   KV.put(`merkleRoot:{userId}:{projectId}`, merkleRoot)
+   ```
+3. (Phase 2 POC) Generate summaries and embeddings
+4. Return success response
+
+---
+
+### 4. GET `/v1/health`
+
+**Purpose**: Health check endpoint.
+
+#### Request
+
+No body required.
+
+#### Response
+
+```json
+{
+  "status": "ok",
+  "timestamp": "2026-01-11T12:00:00Z",
+  "version": "1.0.0"
 }
 ```
 
 ---
 
-## Data Storage
+## Error Responses
 
-### What Goes Where
+All endpoints return consistent error format:
 
-```mermaid
-flowchart LR
-    subgraph Client["Client (Local)"]
-        MS["merkle-state.json<br/>- root hash<br/>- leaves with relativePath"]
-        DQ["dirty-queue.json<br/>- dirty file list"]
-        CR["ChunkReference<br/>- relativePath<br/>- lineStart/End<br/>- charStart/End"]
-    end
-
-    subgraph Server["Server (KV)"]
-        MR["merkleRoot:{userId}<br/>→ 'abc123...'"]
-        CH["chunkHash:{hash}<br/>→ '1'"]
-    end
-
-    MS -.->|"merkleRoot only"| MR
-    CR -.->|"hash only (no path)"| CH
+```typescript
+interface ErrorResponse {
+  error: string;        // Error type
+  message: string;      // Human-readable message
+  details?: unknown;    // Optional additional details
+}
 ```
 
-### Client-Side Storage
+### Common Errors
+
+| Status | Error | When |
+|--------|-------|------|
+| 400 | Bad Request | Invalid JSON, missing required fields |
+| 401 | Unauthorized | Missing or invalid auth token |
+| 404 | Not Found | Project not found (for /check) |
+| 413 | Payload Too Large | Request body exceeds limit |
+| 429 | Too Many Requests | Rate limit exceeded |
+| 500 | Internal Server Error | Server-side error |
+
+---
+
+## Data Storage
+
+### KV Structure
+
+```
+merkleRoot:{userId}:{projectId}  →  "rootHash"          (no TTL)
+chunkHash:{hash}                 →  "1"                 (30-day TTL)
+```
+
+### Client-Side Storage (.puku/)
+
+**project.json:**
+```json
+{
+  "projectId": "550e8400-e29b-41d4-a716-446655440000",
+  "createdAt": "2026-01-11T12:00:00Z"
+}
+```
 
 **merkle-state.json:**
 ```json
 {
-  "root": "abc123...",
+  "root": "a1b2c3d4e5f6...",
   "leaves": [
     { "relativePath": "src/auth.ts", "hash": "..." },
     { "relativePath": "src/api.ts", "hash": "..." }
@@ -329,102 +650,76 @@ flowchart LR
 }
 ```
 
-**ChunkReference (in memory):**
+---
+
+## TypeScript Types (Shared)
+
 ```typescript
-{
-  relativePath: "src/auth.ts",  // NOT sent to server
-  lineStart: 10,
-  lineEnd: 25,
-  charStart: 234,
-  charEnd: 567
+// Chunk types
+type ChunkType =
+  | "function"
+  | "class"
+  | "method"
+  | "interface"
+  | "type"
+  | "enum"
+  | "struct"
+  | "impl"
+  | "trait"
+  | "block";
+
+// Client-side only (not sent to server)
+interface ChunkReference {
+  relativePath: string;
+  lineStart: number;
+  lineEnd: number;
+  charStart: number;
+  charEnd: number;
+}
+
+// Sync payload (sent to server)
+interface ChunkSyncPayload {
+  hash: string;
+  type: ChunkType;
+  name: string | null;
+  lines: [number, number];
+  charCount: number;
+}
+
+// Full chunk with code (for /init and /sync phase 2)
+interface ChunkWithCode extends ChunkSyncPayload {
+  code: string;
+  languageId: string;
 }
 ```
 
-### Server-Side Storage (KV)
+---
 
-| Key Pattern | Value | Purpose |
-|-------------|-------|---------|
-| `merkleRoot:{userId}` | `"abc123..."` | Quick change detection |
-| `chunkHash:{hash}` | `"1"` | Cache check for chunks |
+## What Gets Sent to Server
+
+| Data | Sent? | When | Purpose |
+|------|-------|------|---------|
+| `projectId` | ✅ | Always | Identify project |
+| `merkleRoot` | ✅ | Always | Change detection |
+| `hash` | ✅ | Always | Identify chunk |
+| `type` | ✅ | Always | Chunk classification |
+| `name` | ✅ | Always | Function/class name |
+| `lines` | ✅ | Always | Line range metadata |
+| `charCount` | ✅ | Always | Size info |
+| `languageId` | ✅ | /init, /sync phase 2 | Language for AI processing |
+| `code` | ✅ | /init, /sync phase 2 | Only for new chunks |
+| `relativePath` | ❌ | Never | Privacy - stays on client |
+| `charStart/End` | ❌ | Never | Client use only |
 
 ---
 
-## What Gets Sent to Server vs Stays Local
+## Rate Limits
 
-| Data | Sent to Server? | Purpose |
-|------|-----------------|---------|
-| `merkleRoot` | ✅ Yes | O(1) change detection |
-| `hash` | ✅ Yes | Identify chunk uniquely |
-| `type` | ✅ Yes | "function", "class", etc. |
-| `name` | ✅ Yes | Function/class name |
-| `lines` | ✅ Yes | Line range metadata |
-| `charCount` | ✅ Yes | Size info |
-| `code` | ✅ Phase 2 only | Actual content (only for new chunks) |
-| `relativePath` | ❌ No | Privacy - client only |
-| `charStart/End` | ❌ No | Client uses to read code |
-
----
-
-## Why Relative Paths?
-
-```mermaid
-flowchart TB
-    subgraph Absolute["Absolute Path Problem"]
-        A1["Machine A: C:\Users\alice\project\src\auth.ts"]
-        A2["Machine B: /home/bob/project/src/auth.ts"]
-        A3["Different paths = Different hashes!"]
-        A4["Cache doesn't work across devices ❌"]
-        A1 --> A3
-        A2 --> A3
-        A3 --> A4
-    end
-
-    subgraph Relative["Relative Path Solution"]
-        R1["Machine A: src/auth.ts"]
-        R2["Machine B: src/auth.ts"]
-        R3["Same paths = Same hashes!"]
-        R4["Cache works across devices ✅"]
-        R1 --> R3
-        R2 --> R3
-        R3 --> R4
-    end
-```
-
----
-
-## Optimization Summary
-
-### Where Two-Phase Saves
-
-| Step | Without Two-Phase | With Two-Phase | Savings |
-|------|-------------------|----------------|---------|
-| Client scanning | Scan all files | Scan all files | None |
-| Client chunking | Chunk all files | Chunk all files | None |
-| Network (check) | - | 64 bytes | - |
-| Network (sync) | 400KB (all code) | 4KB hashes + changed code | ~96% |
-| Server storage | Store all | Store only new | Depends |
-| AI processing | Process all (Phase 2) | Process only new (Phase 2) | ~96% |
-
-### Timeline Example
-
-```
-Project: 100 files, 100 chunks
-User edited 1 file offline, reopens project:
-
-Client work (unavoidable):
-├── Scan 100 files
-├── Build Merkle tree
-└── Chunk 100 files
-
-Network transfer:
-├── /check: 64 bytes
-├── /sync phase 1: ~4KB (100 hashes)
-└── /sync phase 2: ~4KB (1 chunk code)
-
-Server work:
-├── Compare 100 hashes with KV
-└── Store 1 new hash
-```
+| Endpoint | Limit | Window |
+|----------|-------|--------|
+| `/v1/index/init` | 10 | per minute |
+| `/v1/index/check` | 60 | per minute |
+| `/v1/index/sync` | 30 | per minute |
 
 ---
 
@@ -444,12 +739,16 @@ indexing-system-poc/
 │   ├── src/
 │   │   ├── index.ts                 # Hono app entry point
 │   │   ├── types.ts                 # Request/response interfaces
+│   │   ├── middleware/
+│   │   │   ├── auth.ts              # Token validation
+│   │   │   └── error-handler.ts     # Error handling
 │   │   ├── routes/
+│   │   │   ├── health.ts            # GET /v1/health
 │   │   │   ├── index-init.ts        # POST /v1/index/init
 │   │   │   ├── index-check.ts       # POST /v1/index/check
 │   │   │   └── index-sync.ts        # POST /v1/index/sync
 │   │   └── lib/
-│   │       └── kv-store.ts          # KV operations
+│   │       └── kv-store.ts          # KV operations with TTL
 │   └── wrangler.toml
 │
 ├── Merkle-Tree-Builder/             # Existing (updated for relative paths)
@@ -480,17 +779,19 @@ compatibility_flags = ["nodejs_compat"]
 
 [[kv_namespaces]]
 binding = "INDEX_KV"
-id = "create-with-wrangler"
+id = "your-kv-namespace-id"
 ```
 
 ### Step 3: Implement Endpoints
-1. `/v1/index/init` - Store merkle root + all chunk hashes
-2. `/v1/index/check` - Compare merkle roots
-3. `/v1/index/sync` - Two-phase hash check + code storage
+1. `/v1/health` - Health check
+2. `/v1/index/init` - First-time indexing
+3. `/v1/index/check` - Change detection
+4. `/v1/index/sync` - Two-phase sync
 
 ### Step 4: Create Client Package
-1. `sync-client.ts` - HTTP calls to worker
-2. `code-reader.ts` - Read code using ChunkReference
+1. `types.ts` - Shared TypeScript interfaces
+2. `sync-client.ts` - HTTP client for worker API
+3. `code-reader.ts` - Read code using ChunkReference
 
 ### Step 5: Integration Test
 - Test full flow: init → check → sync
@@ -503,10 +804,12 @@ id = "create-with-wrangler"
 |----------|-------------|
 | ✅ Relative paths | All local storage uses relative paths |
 | ✅ Worker deploys | `wrangler dev` runs without errors |
-| ✅ /init works | Stores merkle root and chunk hashes |
+| ✅ /health works | Returns status: ok |
+| ✅ /init works | Stores merkle root and chunk hashes with TTL |
 | ✅ /check works | Returns changed: true/false correctly |
-| ✅ /sync phase 1 | Returns needed vs cached hashes |
-| ✅ /sync phase 2 | Stores new chunk hashes |
+| ✅ /sync phase 1 | Returns needed vs cached, refreshes TTL |
+| ✅ /sync phase 2 | Stores new chunk hashes with TTL |
+| ✅ TTL works | Hashes expire after 30 days |
 | ✅ Integration test | Full flow works end-to-end |
 
 ---
