@@ -1,0 +1,18 @@
+{
+  "root": "6bd408c879fec885ada6f28cda3133db57c99f51db10e82842da8f4f5d14ac2e",
+  "leaves": [
+    {
+      "relativePath": "src/api.ts",
+      "hash": "c36d98181f80f26b31a4bafcb2fb474309b38bdb52d4e99100a9f478305b0bbc"
+    },
+    {
+      "relativePath": "src/auth.ts",
+      "hash": "3815d73a853ca7135be734bc1d9ac766d51891c11d5c6381b4c5040fe2f4e347"
+    },
+    {
+      "relativePath": "src/utils.ts",
+      "hash": "8b4edc768061ad2494e61f91552be5a238760019d779d92ad3447d0c75fa4af1"
+    }
+  ],
+  "timestamp": "2026-01-12T12:39:51.816Z"
+}
