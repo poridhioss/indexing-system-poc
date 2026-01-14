@@ -6,27 +6,11 @@ This is exactly how production AI code editors like Cursor and PUKU Editor imple
 
 ## Project Overview
 
-In this lab, you'll build a complete end-to-end code indexing system with two main components:
+On the **server side**, you'll deploy a Cloudflare Worker using the Hono framework. The worker exposes four endpoints—health check, init, check, and sync—and uses Cloudflare KV to store merkle roots and chunk hashes. It implements the two-phase sync protocol where hashes are checked first, and code is transferred only on demand.
 
-**Server Side (Cloudflare Worker):**
-- Deploy a Hono-based API to Cloudflare Workers
-- Implement four endpoints: health check, init, check, and sync
-- Use Cloudflare KV for storing merkle roots and chunk hashes
-- Handle the two-phase sync protocol (hashes first, code on demand)
+On the **client side**, you'll build a TypeScript application that integrates the file watcher, Merkle tree builder, and chunk hasher from previous labs. The SyncClient class orchestrates all components, handling different sync scenarios (new project, reopen, live editing) and running periodic syncs with dirty queue optimization.
 
-**Client Side (Node.js Application):**
-- Integrate file watcher, Merkle tree builder, and chunk hasher
-- Implement the SyncClient that orchestrates all components
-- Handle different sync scenarios: new project, reopen, and live editing
-- Run periodic sync with dirty queue optimization
-
-**Testing Flow:**
-1. Start the Cloudflare Worker locally
-2. Test APIs with curl commands
-3. Run the client application
-4. Edit files in test-project and observe the sync behavior
-
-By the end of this lab, you'll have a working indexing pipeline that detects file changes, chunks code semantically, and syncs efficiently with the server using the two-phase protocol.
+For **testing**, you'll start the worker locally, test the APIs with curl commands, then run the client application and edit files in the test-project folder to observe the complete sync behavior in action.
 
 ## Prerequisites
 
