@@ -37,29 +37,46 @@ In **Phase 2** (this lab), we add AI processing:
 ### Phase 1 vs Phase 2 Data Flow
 
 **Phase 1 (Lab-08):**
-```
-Client Chunks --> Server --> KV (store hashes)
+
+```mermaid
+flowchart LR
+    A[Client Chunks] --> B[Server]
+    B --> C[KV Store]
+    C --> D["Store Hashes"]
 ```
 
 **Phase 2 (this lab):**
-```
-Client Chunks --> Server --> AI Summarize --> AI Embed --> Vectorize --> KV (store hashes)
+
+```mermaid
+flowchart LR
+    A[Client Chunks] --> B[Server]
+    B --> C[AI Summarize]
+    C --> D[AI Embed]
+    D --> E[Vectorize]
+    E --> F[KV Store]
 ```
 
 ### AI Processing Pipeline
 
-```
-                                    PHASE 2: AI PROCESSING
-+------------------+     +------------------+     +------------------+     +------------------+
-|                  |     |                  |     |                  |     |                  |
-|   Code Chunks    | --> |   Summarization  | --> |    Embeddings    | --> |    Vectorize     |
-|                  |     |   (Qwen 2.5)     |     |   (BGE Large)    |     |    (Storage)     |
-|                  |     |                  |     |                  |     |                  |
-+------------------+     +------------------+     +------------------+     +------------------+
-        |                        |                        |                        |
-   From client              Natural language         1024-dim vectors        Stored with
-   (code + metadata)        summaries for            for similarity         metadata for
-                            semantic search           matching               retrieval
+```mermaid
+flowchart LR
+    subgraph Input
+        A[Code Chunks]
+    end
+
+    subgraph AI Processing
+        B[Summarization<br/>Qwen 2.5 Coder]
+        C[Embeddings<br/>BGE Large 1024d]
+    end
+
+    subgraph Storage
+        D[Vectorize]
+    end
+
+    A -->|"code + metadata"| B
+    B -->|"natural language<br/>summaries"| C
+    C -->|"1024-dim vectors"| D
+    D -->|"stored with<br/>metadata"| E[Ready for Search]
 ```
 
 ### API Endpoints
@@ -705,14 +722,14 @@ cd indexing-poc-worker-phase-2
 wrangler deploy
 ```
 
-**Deployed URL:** `https://indexing-poc-phase-2.fazlulkarim362.workers.dev`
+**Deployed URL:** `<worker-url>`
 
 ### Test with curl
 
 #### Test 1: Root Endpoint (API Info)
 
 ```bash
-curl https://indexing-poc-phase-2.fazlulkarim362.workers.dev/
+curl <worker-url>/
 ```
 
 **Expected:**
@@ -735,7 +752,7 @@ curl https://indexing-poc-phase-2.fazlulkarim362.workers.dev/
 #### Test 2: Health Check
 
 ```bash
-curl https://indexing-poc-phase-2.fazlulkarim362.workers.dev/v1/health
+curl <worker-url>/v1/health
 ```
 
 **Expected:**
@@ -748,7 +765,7 @@ curl https://indexing-poc-phase-2.fazlulkarim362.workers.dev/v1/health
 **Note:** Use unique hash values each time you test. If hashes already exist in KV cache, they will be skipped (this is the expected two-phase sync optimization).
 
 ```bash
-curl -X POST https://indexing-poc-phase-2.fazlulkarim362.workers.dev/v1/index/init \
+curl -X POST <worker-url>/v1/index/init \
   -H "Authorization: Bearer dev-token-user123" \
   -H "Content-Type: application/json" \
   -d '{
@@ -793,7 +810,7 @@ curl -X POST https://indexing-poc-phase-2.fazlulkarim362.workers.dev/v1/index/in
 #### Test 4: Check for Changes
 
 ```bash
-curl -X POST https://indexing-poc-phase-2.fazlulkarim362.workers.dev/v1/index/check \
+curl -X POST <worker-url>/v1/index/check \
   -H "Authorization: Bearer dev-token-user123" \
   -H "Content-Type: application/json" \
   -d '{"projectId": "my-project", "merkleRoot": "abc123"}'
@@ -807,7 +824,7 @@ curl -X POST https://indexing-poc-phase-2.fazlulkarim362.workers.dev/v1/index/ch
 #### Test 5: Sync Phase 1 (Hash Check)
 
 ```bash
-curl -X POST https://indexing-poc-phase-2.fazlulkarim362.workers.dev/v1/index/sync \
+curl -X POST <worker-url>/v1/index/sync \
   -H "Authorization: Bearer dev-token-user123" \
   -H "Content-Type: application/json" \
   -d '{
@@ -829,7 +846,7 @@ curl -X POST https://indexing-poc-phase-2.fazlulkarim362.workers.dev/v1/index/sy
 #### Test 6: Sync Phase 2 (Code Transfer + AI)
 
 ```bash
-curl -X POST https://indexing-poc-phase-2.fazlulkarim362.workers.dev/v1/index/sync \
+curl -X POST <worker-url>/v1/index/sync \
   -H "Authorization: Bearer dev-token-user123" \
   -H "Content-Type: application/json" \
   -d '{
@@ -864,7 +881,7 @@ curl -X POST https://indexing-poc-phase-2.fazlulkarim362.workers.dev/v1/index/sy
 #### Test 7: Semantic Search
 
 ```bash
-curl -X POST https://indexing-poc-phase-2.fazlulkarim362.workers.dev/v1/search \
+curl -X POST <worker-url>/v1/search \
   -H "Authorization: Bearer dev-token-user123" \
   -H "Content-Type: application/json" \
   -d '{
@@ -896,7 +913,7 @@ curl -X POST https://indexing-poc-phase-2.fazlulkarim362.workers.dev/v1/search \
 #### Test 8: Standalone Summarization
 
 ```bash
-curl -X POST https://indexing-poc-phase-2.fazlulkarim362.workers.dev/v1/summarize/batch \
+curl -X POST <worker-url>/v1/summarize/batch \
   -H "Authorization: Bearer dev-token-user123" \
   -H "Content-Type: application/json" \
   -d '{
@@ -917,7 +934,7 @@ curl -X POST https://indexing-poc-phase-2.fazlulkarim362.workers.dev/v1/summariz
 #### Test 9: Standalone Embeddings (OpenAI-compatible)
 
 ```bash
-curl -X POST https://indexing-poc-phase-2.fazlulkarim362.workers.dev/v1/embeddings \
+curl -X POST <worker-url>/v1/embeddings \
   -H "Authorization: Bearer dev-token-user123" \
   -H "Content-Type: application/json" \
   -d '{
@@ -1006,16 +1023,6 @@ const vectors = chunks.map((chunk) => ({
 | Embeddings | 100 texts | Smaller inputs, faster processing |
 | Vectorize Upsert | 100 vectors | API limit |
 
-### Cost Analysis (500 Users)
-
-| Component | Monthly Usage | Cost |
-|-----------|---------------|------|
-| KV Reads | ~4.32M | $2.16 |
-| KV Writes | ~432K | $2.16 |
-| Vectorize Storage | 25M vectors | ~$25 |
-| Vectorize Queries | 1.44M | ~$1.44 |
-| Workers AI | Within free tier | $0 |
-| **Total** | | **~$31/month** |
 
 ## Conclusion
 
@@ -1032,8 +1039,5 @@ You've built an AI-powered code indexing pipeline that:
 The pipeline now supports full semantic code search. Combined with the Phase 1 sync infrastructure, you have a production-ready indexing system similar to what powers Cursor and other AI code editors.
 
 ### Next Steps
-
 - Integrate with the client from Lab-08 for end-to-end testing
-- Add more sophisticated search filters (by type, language, etc.)
-- Implement chunk deletion when files are removed
-- Add analytics and monitoring
+

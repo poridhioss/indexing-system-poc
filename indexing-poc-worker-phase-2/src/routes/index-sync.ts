@@ -1,4 +1,4 @@
-import { Hono, Context } from 'hono';
+ import { Hono, Context } from 'hono';
 import type {
     Env,
     Variables,
