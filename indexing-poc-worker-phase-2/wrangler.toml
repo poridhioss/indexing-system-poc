@@ -1,0 +1,31 @@
+name = "indexing-poc-phase-2"
+main = "src/index.ts"
+compatibility_date = "2024-11-24"
+compatibility_flags = ["nodejs_compat"]
+
+# Your Cloudflare account ID (find in dashboard URL or run: wrangler whoami)
+account_id = "afeeea28ef4b58aad33f54322feaab68"
+
+[vars]
+# Static JWT token for POC (will be replaced with proper auth later)
+DEV_TOKEN = "dev-token-12345"
+# TTL for chunk hashes in seconds (30 days)
+CHUNK_HASH_TTL = "2592000"
+
+# Workers AI binding (FREE - 10K neurons/day)
+[ai]
+binding = "AI"
+
+# KV namespace for storing merkle roots and chunk hashes
+# For local dev, wrangler creates a local KV automatically
+# For production, create with: wrangler kv:namespace create INDEX_KV
+[[kv_namespaces]]
+binding = "INDEX_KV"
+id = "c682d9b69609426584b8bb43e8efad26"
+preview_id = "d078af5985044b5182091a4d18fa7d48"
+
+# Vectorize for embeddings storage (FREE - 5M vectors)
+# Create with: wrangler vectorize create code-chunks --dimensions 1024 --metric cosine
+[[vectorize]]
+binding = "VECTORIZE"
+index_name = "code-chunks"

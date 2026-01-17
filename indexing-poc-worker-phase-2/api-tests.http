@@ -1,0 +1,280 @@
+### ============================================
+### Indexing POC Worker - API Tests
+### ============================================
+### Base URL: http://127.0.0.1:8787
+### Auth Token Format: dev-token-{userId}
+### ============================================
+
+@baseUrl = http://127.0.0.1:8787
+@authToken = dev-token-user123
+@projectId = 40e0cfe5-1fa9-45bc-9b7a-e4731ad352ee
+
+### ============================================
+### 1. Root Endpoint (No Auth)
+### ============================================
+
+### Get API Info
+GET {{baseUrl}}/
+
+### ============================================
+### 2. Health Check (No Auth)
+### ============================================
+
+### Health Check
+GET {{baseUrl}}/v1/health
+
+### ============================================
+### 3. Index Init - First Time Project Open
+### ============================================
+
+### Init without auth (should fail with 401)
+POST {{baseUrl}}/v1/index/init
+Content-Type: application/json
+
+{
+  "projectId": "{{projectId}}",
+  "merkleRoot": "abc123",
+  "chunks": []
+}
+
+### Init with auth - Full project indexing
+POST {{baseUrl}}/v1/index/init
+Content-Type: application/json
+Authorization: Bearer {{authToken}}
+
+{
+  "projectId": "{{projectId}}",
+  "merkleRoot": "root-hash-abc123def456",
+  "chunks": [
+    {
+      "hash": "chunk-hash-001",
+      "code": "export function login(username: string, password: string): User | null {\n  if (username === 'admin' && password === 'secret') {\n    return { id: '1', username, email: 'admin@example.com' };\n  }\n  return null;\n}",
+      "type": "function",
+      "name": "login",
+      "languageId": "typescript",
+      "lines": [1, 7],
+      "charCount": 180
+    },
+    {
+      "hash": "chunk-hash-002",
+      "code": "export function logout(userId: string): void {\n  console.log(`User ${userId} logged out`);\n}",
+      "type": "function",
+      "name": "logout",
+      "languageId": "typescript",
+      "lines": [9, 11],
+      "charCount": 85
+    },
+    {
+      "hash": "chunk-hash-003",
+      "code": "export class AuthService {\n  private users: Map<string, User> = new Map();\n\n  authenticate(username: string, password: string): boolean {\n    return username === 'admin' && password === 'secret';\n  }\n}",
+      "type": "class",
+      "name": "AuthService",
+      "languageId": "typescript",
+      "lines": [15, 22],
+      "charCount": 210
+    }
+  ]
+}
+
+### ============================================
+### 4. Index Check - Change Detection
+### ============================================
+
+### Check with same root (no change expected)
+POST {{baseUrl}}/v1/index/check
+Content-Type: application/json
+Authorization: Bearer {{authToken}}
+
+{
+  "projectId": "{{projectId}}",
+  "merkleRoot": "6bd408c879fec885ada6f28cda3133db57c99f51db10e82842da8f4f5d14ac2e"
+}
+
+### Check with different root (change detected)
+POST {{baseUrl}}/v1/index/check
+Content-Type: application/json
+Authorization: Bearer {{authToken}}
+
+{
+  "projectId": "{{projectId}}",
+  "merkleRoot": "different-root-xyz789"
+}
+
+### Check for non-existent project (serverRoot should be null)
+POST {{baseUrl}}/v1/index/check
+Content-Type: application/json
+Authorization: Bearer {{authToken}}
+
+{
+  "projectId": "non-existent-project",
+  "merkleRoot": "any-root"
+}
+
+### ============================================
+### 5. Index Sync - Phase 1 (Hash Check)
+### ============================================
+
+### Phase 1: Send chunk hashes only
+### Server returns which are needed vs cached
+POST {{baseUrl}}/v1/index/sync
+Content-Type: application/json
+Authorization: Bearer {{authToken}}
+
+{
+  "phase": 1,
+  "projectId": "{{projectId}}",
+  "merkleRoot": "new-root-after-changes",
+  "chunks": [
+    {
+      "hash": "chunk-hash-001",
+      "type": "function",
+      "name": "login",
+      "lines": [1, 7],
+      "charCount": 180
+    },
+    {
+      "hash": "chunk-hash-002",
+      "type": "function",
+      "name": "logout",
+      "lines": [9, 11],
+      "charCount": 85
+    },
+    {
+      "hash": "chunk-hash-004",
+      "type": "function",
+      "name": "newFunction",
+      "lines": [25, 30],
+      "charCount": 120
+    }
+  ]
+}
+
+### ============================================
+### 6. Index Sync - Phase 2 (Code Transfer)
+### ============================================
+
+### Phase 2: Send code only for needed chunks
+POST {{baseUrl}}/v1/index/sync
+Content-Type: application/json
+Authorization: Bearer {{authToken}}
+
+{
+  "phase": 2,
+  "projectId": "{{projectId}}",
+  "merkleRoot": "new-root-after-changes",
+  "chunks": [
+    {
+      "hash": "chunk-hash-004",
+      "code": "export function newFunction(data: unknown): string {\n  return JSON.stringify(data);\n}",
+      "type": "function",
+      "name": "newFunction",
+      "languageId": "typescript",
+      "lines": [25, 30],
+      "charCount": 120
+    }
+  ]
+}
+
+### ============================================
+### 7. Verify After Sync
+### ============================================
+
+### Check root was updated
+POST {{baseUrl}}/v1/index/check
+Content-Type: application/json
+Authorization: Bearer {{authToken}}
+
+{
+  "projectId": "{{projectId}}",
+  "merkleRoot": "new-root-after-changes"
+}
+
+### Verify chunk-hash-004 is now cached
+POST {{baseUrl}}/v1/index/sync
+Content-Type: application/json
+Authorization: Bearer {{authToken}}
+
+{
+  "phase": 1,
+  "projectId": "{{projectId}}",
+  "merkleRoot": "new-root-after-changes",
+  "chunks": [
+    {
+      "hash": "chunk-hash-004",
+      "type": "function",
+      "name": "newFunction",
+      "lines": [25, 30],
+      "charCount": 120
+    }
+  ]
+}
+
+### ============================================
+### 8. Cross-User Hash Sharing Test
+### ============================================
+
+### Different user, different project, same chunk hash
+### Should return cached because chunk hashes are global
+POST {{baseUrl}}/v1/index/sync
+Content-Type: application/json
+Authorization: Bearer dev-token-anotheruser
+
+{
+  "phase": 1,
+  "projectId": "completely-different-project",
+  "merkleRoot": "another-root",
+  "chunks": [
+    {
+      "hash": "chunk-hash-001",
+      "type": "function",
+      "name": "login",
+      "lines": [1, 7],
+      "charCount": 180
+    }
+  ]
+}
+
+### ============================================
+### 9. Error Cases
+### ============================================
+
+### Missing projectId
+POST {{baseUrl}}/v1/index/init
+Content-Type: application/json
+Authorization: Bearer {{authToken}}
+
+{
+  "merkleRoot": "abc123",
+  "chunks": []
+}
+
+### Missing merkleRoot
+POST {{baseUrl}}/v1/index/check
+Content-Type: application/json
+Authorization: Bearer {{authToken}}
+
+{
+  "projectId": "{{projectId}}"
+}
+
+### Invalid phase number
+POST {{baseUrl}}/v1/index/sync
+Content-Type: application/json
+Authorization: Bearer {{authToken}}
+
+{
+  "phase": 3,
+  "projectId": "{{projectId}}",
+  "merkleRoot": "abc",
+  "chunks": []
+}
+
+### Invalid JSON
+POST {{baseUrl}}/v1/index/init
+Content-Type: application/json
+Authorization: Bearer {{authToken}}
+
+{invalid json}
+
+### 404 - Route not found
+GET {{baseUrl}}/v1/nonexistent
