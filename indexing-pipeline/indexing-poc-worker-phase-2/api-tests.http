@@ -1,0 +1,853 @@
+### ============================================
+### Indexing POC Worker Phase 2 - API Tests
+### Lab 12: Embedding Cache Only Design
+### Multi-Tenant Isolation + 70-90% AI Cost Savings
+### No chunk hash KV - only embedding cache
+### ============================================
+### Base URL (Local): http://127.0.0.1:8787
+### Base URL (Production): https://indexing-poc-phase-2.fazlulkarim362.workers.dev
+### Auth Token Format: dev-token-{userId}
+### ============================================
+
+@baseUrl = https://indexing-poc-phase-2.fazlulkarim362.workers.dev
+@localUrl = http://127.0.0.1:8787
+@authTokenUserA = dev-token-12345
+@authTokenUserB = dev-token-67890
+@projectIdUserA = alice-project-v3
+@projectIdUserB = bob-project-v3
+
+### ============================================
+### 1. Root Endpoint (No Auth)
+### ============================================
+
+### Get API Info
+GET {{baseUrl}}/
+
+### ============================================
+### 2. Health Check (No Auth)
+### ============================================
+
+### Health Check
+GET {{baseUrl}}/v1/health
+
+### ============================================
+### 3. Index Init - First Time Project Open
+### ============================================
+
+### Init without auth (should fail with 401)
+POST {{baseUrl}}/v1/index/init
+Content-Type: application/json
+
+{
+  "projectId": "{{projectIdUserA}}",
+  "merkleRoot": "abc123",
+  "chunks": []
+}
+
+### Init with auth - User A indexes code (cold cache)
+### Expected: aiProcessed: 2, cacheHits: 0
+POST {{baseUrl}}/v1/index/init
+Content-Type: application/json
+Authorization: Bearer {{authTokenUserA}}
+
+{
+  "projectId": "{{projectIdUserA}}",
+  "merkleRoot": "merkle-alice-001",
+  "chunks": [
+    {
+      "hash": "hash001",
+      "code": "function add(a, b) { return a + b; }",
+      "type": "function",
+      "name": "add",
+      "languageId": "javascript",
+      "lines": [1, 1],
+      "charCount": 38,
+      "filePath": "src/math/addition.ts"
+    },
+    {
+      "hash": "hash002",
+      "code": "function multiply(x, y) { return x * y; }",
+      "type": "function",
+      "name": "multiply",
+      "languageId": "javascript",
+      "lines": [3, 3],
+      "charCount": 42,
+      "filePath": "src/math/multiplication.ts"
+    }
+  ]
+}
+
+### Init with auth - User B indexes SAME code at different paths (warm cache)
+### Expected: aiProcessed: 0, cacheHits: 2 (reuses embeddings from User A)
+POST {{baseUrl}}/v1/index/init
+Content-Type: application/json
+Authorization: Bearer {{authTokenUserB}}
+
+{
+  "projectId": "{{projectIdUserB}}",
+  "merkleRoot": "merkle-bob-001",
+  "chunks": [
+    {
+      "hash": "hash001",
+      "code": "function add(a, b) { return a + b; }",
+      "type": "function",
+      "name": "add",
+      "languageId": "javascript",
+      "lines": [1, 1],
+      "charCount": 38,
+      "filePath": "lib/utils/add.js"
+    },
+    {
+      "hash": "hash002",
+      "code": "function multiply(x, y) { return x * y; }",
+      "type": "function",
+      "name": "multiply",
+      "languageId": "javascript",
+      "lines": [5, 5],
+      "charCount": 42,
+      "filePath": "lib/utils/multiply.js"
+    }
+  ]
+}
+
+### ============================================
+### 4. Index Check - Change Detection
+### ============================================
+
+### Check User A project - no change
+POST {{baseUrl}}/v1/index/check
+Content-Type: application/json
+Authorization: Bearer {{authTokenUserA}}
+
+{
+  "projectId": "{{projectIdUserA}}",
+  "merkleRoot": "merkle-alice-001"
+}
+
+### Check User A project - change detected
+POST {{baseUrl}}/v1/index/check
+Content-Type: application/json
+Authorization: Bearer {{authTokenUserA}}
+
+{
+  "projectId": "{{projectIdUserA}}",
+  "merkleRoot": "merkle-alice-002-changed"
+}
+
+### Check User B project - no change
+POST {{baseUrl}}/v1/index/check
+Content-Type: application/json
+Authorization: Bearer {{authTokenUserB}}
+
+{
+  "projectId": "{{projectIdUserB}}",
+  "merkleRoot": "merkle-bob-001"
+}
+
+### Check for non-existent project
+POST {{baseUrl}}/v1/index/check
+Content-Type: application/json
+Authorization: Bearer {{authTokenUserA}}
+
+{
+  "projectId": "non-existent-project",
+  "merkleRoot": "any-root"
+}
+
+### ============================================
+### 5. Index Sync - Phase 1 (Metadata + Cache Check)
+### ============================================
+### Phase 1 now:
+### - Checks embedding cache for all chunks
+### - Upserts HITs to Vectorize immediately with user metadata
+### - Returns: { needed: string[], vectorized: number, cacheHits: number }
+
+### User A - Phase 1: Send chunk metadata (hash001 cached, hash003-new is new)
+### Expected: needed: ["hash003-new"], vectorized: 1, cacheHits: 1
+POST {{baseUrl}}/v1/index/sync
+Content-Type: application/json
+Authorization: Bearer {{authTokenUserA}}
+
+{
+  "phase": 1,
+  "projectId": "{{projectIdUserA}}",
+  "merkleRoot": "merkle-alice-002",
+  "chunks": [
+    {
+      "hash": "hash001",
+      "type": "function",
+      "name": "add",
+      "languageId": "javascript",
+      "lines": [1, 1],
+      "charCount": 38,
+      "filePath": "src/math/addition.ts"
+    },
+    {
+      "hash": "hash003-new",
+      "type": "function",
+      "name": "subtract",
+      "languageId": "javascript",
+      "lines": [5, 5],
+      "charCount": 44,
+      "filePath": "src/math/subtraction.ts"
+    }
+  ]
+}
+
+### User B - Phase 1: Send chunk metadata
+### Expected: needed: ["hash004-new"], vectorized: 1, cacheHits: 1
+POST {{baseUrl}}/v1/index/sync
+Content-Type: application/json
+Authorization: Bearer {{authTokenUserB}}
+
+{
+  "phase": 1,
+  "projectId": "{{projectIdUserB}}",
+  "merkleRoot": "merkle-bob-002",
+  "chunks": [
+    {
+      "hash": "hash001",
+      "type": "function",
+      "name": "add",
+      "languageId": "javascript",
+      "lines": [1, 1],
+      "charCount": 38,
+      "filePath": "lib/utils/add.js"
+    },
+    {
+      "hash": "hash004-new",
+      "type": "function",
+      "name": "divide",
+      "languageId": "javascript",
+      "lines": [10, 10],
+      "charCount": 50,
+      "filePath": "lib/utils/divide.js"
+    }
+  ]
+}
+
+### ============================================
+### 6. Index Sync - Phase 2 (Code for Misses Only)
+### ============================================
+
+### User A - Phase 2: Send code only for needed chunks (hash003-new)
+### Expected: aiProcessed: 1, cacheHits: 0
+POST {{baseUrl}}/v1/index/sync
+Content-Type: application/json
+Authorization: Bearer {{authTokenUserA}}
+
+{
+  "phase": 2,
+  "projectId": "{{projectIdUserA}}",
+  "merkleRoot": "merkle-alice-002",
+  "chunks": [
+    {
+      "hash": "hash003-new",
+      "code": "function subtract(a, b) { return a - b; }",
+      "type": "function",
+      "name": "subtract",
+      "languageId": "javascript",
+      "lines": [5, 5],
+      "charCount": 44,
+      "filePath": "src/math/subtraction.ts"
+    }
+  ]
+}
+
+### User B - Phase 2: Send code only for needed chunks (hash004-new)
+### Expected: aiProcessed: 1, cacheHits: 0
+POST {{baseUrl}}/v1/index/sync
+Content-Type: application/json
+Authorization: Bearer {{authTokenUserB}}
+
+{
+  "phase": 2,
+  "projectId": "{{projectIdUserB}}",
+  "merkleRoot": "merkle-bob-002",
+  "chunks": [
+    {
+      "hash": "hash004-new",
+      "code": "function divide(x, y) { if (y === 0) throw new Error('Division by zero'); return x / y; }",
+      "type": "function",
+      "name": "divide",
+      "languageId": "javascript",
+      "lines": [10, 10],
+      "charCount": 50,
+      "filePath": "lib/utils/divide.js"
+    }
+  ]
+}
+
+### ============================================
+### 7. Semantic Search - Multi-Tenant Isolation
+### ============================================
+### Wait 10-15 seconds after indexing for Vectorize to process
+
+### User A searches for addition
+POST {{baseUrl}}/v1/search
+Content-Type: application/json
+Authorization: Bearer {{authTokenUserA}}
+
+{
+  "query": "how to perform substraction operations",
+  "projectId": "{{projectIdUserA}}",
+  "topK": 5
+}
+
+### User B searches for addition - should get different filePath
+POST {{baseUrl}}/v1/search
+Content-Type: application/json
+Authorization: Bearer {{authTokenUserB}}
+
+{
+  "query": "add two numbers together",
+  "projectId": "{{projectIdUserB}}",
+  "topK": 5
+}
+
+### User A searches for subtraction
+POST {{baseUrl}}/v1/search
+Content-Type: application/json
+Authorization: Bearer {{authTokenUserA}}
+
+{
+  "query": "subtract numbers",
+  "projectId": "{{projectIdUserA}}",
+  "topK": 5
+}
+
+### User B searches for division
+POST {{baseUrl}}/v1/search
+Content-Type: application/json
+Authorization: Bearer {{authTokenUserB}}
+
+{
+  "query": "divide numbers error handling",
+  "projectId": "{{projectIdUserB}}",
+  "topK": 5
+}
+
+### ============================================
+### 8. Standalone Summarization
+### ============================================
+
+### Summarize JavaScript code
+POST {{baseUrl}}/v1/summarize/batch
+Content-Type: application/json
+Authorization: Bearer {{authTokenUserA}}
+
+{
+  "chunks": [
+    {
+      "text": "function validateEmail(email) { return /^[^\\s@]+@[^\\s@]+\\.[^\\s@]+$/.test(email); }"
+    },
+    {
+      "text": "async function fetchUserData(userId) { const response = await fetch(`/api/users/${userId}`); return response.json(); }"
+    }
+  ],
+  "languageId": "javascript"
+}
+
+### Summarize TypeScript code
+POST {{baseUrl}}/v1/summarize/batch
+Content-Type: application/json
+Authorization: Bearer {{authTokenUserA}}
+
+{
+  "chunks": [
+    {
+      "text": "interface User { id: string; name: string; email: string; role: 'admin' | 'user'; }"
+    }
+  ],
+  "languageId": "typescript"
+}
+
+### ============================================
+### 9. Standalone Embeddings (OpenAI-compatible)
+### ============================================
+
+### Generate embeddings for text summaries
+POST {{baseUrl}}/v1/embeddings
+Content-Type: application/json
+Authorization: Bearer {{authTokenUserA}}
+
+{
+  "input": [
+    "validates email format using regex pattern",
+    "fetches user data from API endpoint"
+  ]
+}
+
+### Generate embedding for single text
+POST {{baseUrl}}/v1/embeddings
+Content-Type: application/json
+Authorization: Bearer {{authTokenUserA}}
+
+{
+  "input": "sends notification email to user with message content"
+}
+
+### ============================================
+### 10. Embedding Cache Verification Tests
+### ============================================
+
+### Test: User C indexes SAME CODE as User A (hash001)
+### Expected: aiProcessed: 0, cacheHits: 1 (reuses embedding from cache)
+POST {{baseUrl}}/v1/index/init
+Content-Type: application/json
+Authorization: Bearer dev-token-userc
+
+{
+  "projectId": "charlie-project",
+  "merkleRoot": "merkle-charlie-001",
+  "chunks": [
+    {
+      "hash": "hash001",
+      "code": "function add(a, b) { return a + b; }",
+      "type": "function",
+      "name": "add",
+      "languageId": "javascript",
+      "lines": [1, 1],
+      "charCount": 38,
+      "filePath": "app/helpers/math.ts"
+    }
+  ]
+}
+
+### Test: User C indexes NEW CODE (cold cache)
+### Expected: aiProcessed: 1, cacheHits: 0
+POST {{baseUrl}}/v1/index/init
+Content-Type: application/json
+Authorization: Bearer dev-token-userc
+
+{
+  "projectId": "charlie-project",
+  "merkleRoot": "merkle-charlie-002",
+  "chunks": [
+    {
+      "hash": "unique-charlie-001",
+      "code": "function unique() { return 'charlie-specific'; }",
+      "type": "function",
+      "name": "unique",
+      "languageId": "javascript",
+      "lines": [1, 1],
+      "charCount": 50,
+      "filePath": "app/unique.ts"
+    }
+  ]
+}
+
+### ============================================
+### 11. Two-Phase Sync Cache Test
+### ============================================
+
+### User D Phase 1: hash001 should be in cache
+### Expected: needed: [], vectorized: 1, cacheHits: 1
+POST {{baseUrl}}/v1/index/sync
+Content-Type: application/json
+Authorization: Bearer dev-token-userd
+
+{
+  "phase": 1,
+  "projectId": "delta-project",
+  "merkleRoot": "merkle-delta-001",
+  "chunks": [
+    {
+      "hash": "hash001",
+      "type": "function",
+      "name": "add",
+      "languageId": "javascript",
+      "lines": [1, 1],
+      "charCount": 38,
+      "filePath": "delta/add.ts"
+    }
+  ]
+}
+
+### User D Phase 1 with mix of cached and new
+### Expected: needed: ["delta-new-001"], vectorized: 1, cacheHits: 1
+POST {{baseUrl}}/v1/index/sync
+Content-Type: application/json
+Authorization: Bearer dev-token-userd
+
+{
+  "phase": 1,
+  "projectId": "delta-project",
+  "merkleRoot": "merkle-delta-002",
+  "chunks": [
+    {
+      "hash": "hash001",
+      "type": "function",
+      "name": "add",
+      "languageId": "javascript",
+      "lines": [1, 1],
+      "charCount": 38,
+      "filePath": "delta/add.ts"
+    },
+    {
+      "hash": "delta-new-001",
+      "type": "function",
+      "name": "modulo",
+      "languageId": "javascript",
+      "lines": [5, 5],
+      "charCount": 40,
+      "filePath": "delta/modulo.ts"
+    }
+  ]
+}
+
+### User D Phase 2: Send code for needed chunks
+### Expected: aiProcessed: 1, cacheHits: 0
+POST {{baseUrl}}/v1/index/sync
+Content-Type: application/json
+Authorization: Bearer dev-token-userd
+
+{
+  "phase": 2,
+  "projectId": "delta-project",
+  "merkleRoot": "merkle-delta-002",
+  "chunks": [
+    {
+      "hash": "delta-new-001",
+      "code": "function modulo(a, b) { return a % b; }",
+      "type": "function",
+      "name": "modulo",
+      "languageId": "javascript",
+      "lines": [5, 5],
+      "charCount": 40,
+      "filePath": "delta/modulo.ts"
+    }
+  ]
+}
+
+### ============================================
+### 12. Multi-Tenant Isolation Verification
+### ============================================
+
+### Verify: Same hash, different users, correct metadata in search
+
+### User A searches - should see src/math/addition.ts
+POST {{baseUrl}}/v1/search
+Content-Type: application/json
+Authorization: Bearer {{authTokenUserA}}
+
+{
+  "query": "function returns sum",
+  "projectId": "{{projectIdUserA}}",
+  "topK": 5
+}
+
+### User B searches - should see lib/utils/add.js (NOT src/math/addition.ts)
+POST {{baseUrl}}/v1/search
+Content-Type: application/json
+Authorization: Bearer {{authTokenUserB}}
+
+{
+  "query": "function returns sum",
+  "projectId": "{{projectIdUserB}}",
+  "topK": 5
+}
+
+### User C searches - should see app/helpers/math.ts
+POST {{baseUrl}}/v1/search
+Content-Type: application/json
+Authorization: Bearer dev-token-userc
+
+{
+  "query": "add numbers",
+  "projectId": "charlie-project",
+  "topK": 5
+}
+
+### User D searches - should see delta/add.ts
+POST {{baseUrl}}/v1/search
+Content-Type: application/json
+Authorization: Bearer dev-token-userd
+
+{
+  "query": "addition function",
+  "projectId": "delta-project",
+  "topK": 5
+}
+
+### ============================================
+### 13. Cache Hit Rate Monitoring
+### ============================================
+
+### Scenario: Multiple users index popular library code
+
+### User 1 indexes (cold cache) - aiProcessed: 1, cacheHits: 0
+POST {{baseUrl}}/v1/index/init
+Content-Type: application/json
+Authorization: Bearer dev-token-user1
+
+{
+  "projectId": "cost-test-1",
+  "merkleRoot": "merkle-cost-001",
+  "chunks": [
+    {
+      "hash": "lodash-debounce",
+      "code": "function debounce(func, wait) { let timeout; return function(...args) { clearTimeout(timeout); timeout = setTimeout(() => func.apply(this, args), wait); }; }",
+      "type": "function",
+      "name": "debounce",
+      "languageId": "javascript",
+      "lines": [1, 5],
+      "charCount": 150,
+      "filePath": "node_modules/lodash/debounce.js"
+    }
+  ]
+}
+
+### User 2 indexes same code (warm cache) - aiProcessed: 0, cacheHits: 1
+POST {{baseUrl}}/v1/index/init
+Content-Type: application/json
+Authorization: Bearer dev-token-user2
+
+{
+  "projectId": "cost-test-2",
+  "merkleRoot": "merkle-cost-002",
+  "chunks": [
+    {
+      "hash": "lodash-debounce",
+      "code": "function debounce(func, wait) { let timeout; return function(...args) { clearTimeout(timeout); timeout = setTimeout(() => func.apply(this, args), wait); }; }",
+      "type": "function",
+      "name": "debounce",
+      "languageId": "javascript",
+      "lines": [1, 5],
+      "charCount": 150,
+      "filePath": "vendor/lodash/debounce.js"
+    }
+  ]
+}
+
+### User 3 indexes same code (warm cache) - aiProcessed: 0, cacheHits: 1
+POST {{baseUrl}}/v1/index/init
+Content-Type: application/json
+Authorization: Bearer dev-token-user3
+
+{
+  "projectId": "cost-test-3",
+  "merkleRoot": "merkle-cost-003",
+  "chunks": [
+    {
+      "hash": "lodash-debounce",
+      "code": "function debounce(func, wait) { let timeout; return function(...args) { clearTimeout(timeout); timeout = setTimeout(() => func.apply(this, args), wait); }; }",
+      "type": "function",
+      "name": "debounce",
+      "languageId": "javascript",
+      "lines": [1, 5],
+      "charCount": 150,
+      "filePath": "packages/utils/debounce.js"
+    }
+  ]
+}
+
+### Cache hit rate: 2/3 = 67%
+### AI cost savings: 67% (User 1 pays, Users 2 & 3 reuse)
+
+### ============================================
+### 14. Error Cases
+### ============================================
+
+### Missing projectId
+POST {{baseUrl}}/v1/index/init
+Content-Type: application/json
+Authorization: Bearer {{authTokenUserA}}
+
+{
+  "merkleRoot": "abc123",
+  "chunks": []
+}
+
+### Missing merkleRoot
+POST {{baseUrl}}/v1/index/check
+Content-Type: application/json
+Authorization: Bearer {{authTokenUserA}}
+
+{
+  "projectId": "{{projectIdUserA}}"
+}
+
+### Invalid phase number
+POST {{baseUrl}}/v1/index/sync
+Content-Type: application/json
+Authorization: Bearer {{authTokenUserA}}
+
+{
+  "phase": 3,
+  "projectId": "{{projectIdUserA}}",
+  "merkleRoot": "abc",
+  "chunks": []
+}
+
+### Missing query in search
+POST {{baseUrl}}/v1/search
+Content-Type: application/json
+Authorization: Bearer {{authTokenUserA}}
+
+{
+  "projectId": "{{projectIdUserA}}",
+  "topK": 5
+}
+
+### Missing projectId in search
+POST {{baseUrl}}/v1/search
+Content-Type: application/json
+Authorization: Bearer {{authTokenUserA}}
+
+{
+  "query": "test",
+  "topK": 5
+}
+
+### Invalid JSON
+POST {{baseUrl}}/v1/index/init
+Content-Type: application/json
+Authorization: Bearer {{authTokenUserA}}
+
+{invalid json}
+
+### Phase 1 missing languageId (now required)
+POST {{baseUrl}}/v1/index/sync
+Content-Type: application/json
+Authorization: Bearer {{authTokenUserA}}
+
+{
+  "phase": 1,
+  "projectId": "{{projectIdUserA}}",
+  "merkleRoot": "test",
+  "chunks": [
+    {
+      "hash": "test001",
+      "type": "function",
+      "name": "test",
+      "lines": [1, 1],
+      "charCount": 30,
+      "filePath": "test.ts"
+    }
+  ]
+}
+
+### 404 - Route not found
+GET {{baseUrl}}/v1/nonexistent
+
+### 405 - Method not allowed
+GET {{baseUrl}}/v1/index/init
+
+### ============================================
+### 15. Large Batch Test
+### ============================================
+
+### Batch of 5 chunks
+POST {{baseUrl}}/v1/index/init
+Content-Type: application/json
+Authorization: Bearer {{authTokenUserA}}
+
+{
+  "projectId": "{{projectIdUserA}}",
+  "merkleRoot": "merkle-alice-batch",
+  "chunks": [
+    {
+      "hash": "batch001",
+      "code": "function func1() { return 1; }",
+      "type": "function",
+      "name": "func1",
+      "languageId": "javascript",
+      "lines": [1, 1],
+      "charCount": 30,
+      "filePath": "src/batch/func1.ts"
+    },
+    {
+      "hash": "batch002",
+      "code": "function func2() { return 2; }",
+      "type": "function",
+      "name": "func2",
+      "languageId": "javascript",
+      "lines": [1, 1],
+      "charCount": 30,
+      "filePath": "src/batch/func2.ts"
+    },
+    {
+      "hash": "batch003",
+      "code": "function func3() { return 3; }",
+      "type": "function",
+      "name": "func3",
+      "languageId": "javascript",
+      "lines": [1, 1],
+      "charCount": 30,
+      "filePath": "src/batch/func3.ts"
+    },
+    {
+      "hash": "batch004",
+      "code": "function func4() { return 4; }",
+      "type": "function",
+      "name": "func4",
+      "languageId": "javascript",
+      "lines": [1, 1],
+      "charCount": 30,
+      "filePath": "src/batch/func4.ts"
+    },
+    {
+      "hash": "batch005",
+      "code": "function func5() { return 5; }",
+      "type": "function",
+      "name": "func5",
+      "languageId": "javascript",
+      "lines": [1, 1],
+      "charCount": 30,
+      "filePath": "src/batch/func5.ts"
+    }
+  ]
+}
+
+### Search in batch results
+POST {{baseUrl}}/v1/search
+Content-Type: application/json
+Authorization: Bearer {{authTokenUserA}}
+
+{
+  "query": "function returns number",
+  "projectId": "{{projectIdUserA}}",
+  "topK": 10
+}
+
+### ============================================
+### 16. Local Development Tests
+### ============================================
+### Uncomment and use @localUrl for local testing
+
+# ### Local Health Check
+# GET {{localUrl}}/v1/health
+
+# ### Local Index Init
+# POST {{localUrl}}/v1/index/init
+# Content-Type: application/json
+# Authorization: Bearer {{authTokenUserA}}
+#
+# {
+#   "projectId": "{{projectIdUserA}}",
+#   "merkleRoot": "local-test",
+#   "chunks": [
+#     {
+#       "hash": "localtest001",
+#       "code": "function local() { return 'local'; }",
+#       "type": "function",
+#       "name": "local",
+#       "languageId": "javascript",
+#       "lines": [1, 1],
+#       "charCount": 40,
+#       "filePath": "src/local.ts"
+#     }
+#   ]
+# }
+
+# ### Local Search
+# POST {{localUrl}}/v1/search
+# Content-Type: application/json
+# Authorization: Bearer {{authTokenUserA}}
+#
+# {
+#   "query": "local function",
+#   "projectId": "{{projectIdUserA}}",
+#   "topK": 5
+# }

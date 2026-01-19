@@ -76,7 +76,7 @@ export interface VectorizeDeleteResult {
 
 export interface VectorizeQueryOptions {
     topK: number;
-    returnMetadata?: boolean;
+    returnMetadata?: 'all' | 'indexed' | 'none'; // V2 API
     returnValues?: boolean;
 }
 
@@ -104,7 +104,7 @@ export interface ChunkMetadata {
     languageId: string;
     lines: [number, number];
     charCount: number;
-    filePath: string;  // Relative path to source file
+    filePath: string;
 }
 
 // ============================================
@@ -131,7 +131,7 @@ export interface SearchResult {
     name: string | null;
     languageId: string;
     lines: [number, number];
-    filePath: string;  // Relative path to source file
+    filePath: string;
 }
 
 // ============================================
@@ -203,7 +203,7 @@ export interface InitChunk {
     languageId: string;
     lines: [number, number];
     charCount: number;
-    filePath: string;  // Relative path to source file
+    filePath: string;
 }
 
 export interface IndexInitRequest {
@@ -215,9 +215,10 @@ export interface IndexInitRequest {
 export interface IndexInitResponse {
     status: 'indexed' | 'partial';
     merkleRoot: string;
-    chunksStored: number;
-    chunksSkipped: number;
-    aiProcessed?: number;
+    chunksReceived: number;
+    aiProcessed: number;
+    cacheHits: number;
+    vectorsStored: number; // Actual vectors stored (excludes zero vectors from failed AI)
     aiErrors?: string[];
 }
 
@@ -243,8 +244,10 @@ export interface SyncChunkMeta {
     hash: string;
     type: ChunkType;
     name: string | null;
+    languageId: string;
     lines: [number, number];
     charCount: number;
+    filePath: string;
 }
 
 export interface IndexSyncPhase1Request {
@@ -256,7 +259,8 @@ export interface IndexSyncPhase1Request {
 
 export interface IndexSyncPhase1Response {
     needed: string[];
-    cached: string[];
+    vectorized: number;
+    cacheHits: number;
 }
 
 // ============================================
@@ -271,7 +275,7 @@ export interface SyncChunkWithCode {
     languageId: string;
     lines: [number, number];
     charCount: number;
-    filePath: string;  // Relative path to source file
+    filePath: string;
 }
 
 export interface IndexSyncPhase2Request {
@@ -287,6 +291,8 @@ export interface IndexSyncPhase2Response {
     merkleRoot: string;
     message: string;
     aiProcessed?: number;
+    cacheHits?: number;
+    vectorsStored?: number; // Actual vectors stored (excludes zero vectors from failed AI)
     aiErrors?: string[];
 }
 
@@ -325,7 +331,6 @@ export interface Env {
     // Phase 1 bindings
     INDEX_KV: KVNamespace;
     DEV_TOKEN: string;
-    CHUNK_HASH_TTL: string;
 
     // Phase 2 bindings (AI + Vectorize)
     AI: Ai;

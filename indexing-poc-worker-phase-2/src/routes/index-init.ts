@@ -163,6 +163,7 @@ indexInit.post('/', async (c) => {
                     languageId: chunk.languageId,
                     lines: chunk.lines,
                     charCount: chunk.charCount,
+                    filePath: chunk.filePath,
                 } as ChunkMetadata,
             }));
 

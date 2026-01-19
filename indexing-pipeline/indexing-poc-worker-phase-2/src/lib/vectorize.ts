@@ -10,10 +10,19 @@ import type {
 const VECTORIZE_BATCH_SIZE = 100;
 
 /**
+ * Check if an embedding is a zero vector (fallback from failed AI)
+ */
+function isZeroVector(embedding: number[]): boolean {
+    return embedding.every((v) => v === 0);
+}
+
+/**
  * Upsert chunks to Vectorize
+ * Filters out chunks with zero vectors (failed AI embeddings)
  *
  * @param vectorize - Vectorize index binding
  * @param chunks - Processed chunks with embeddings
+ * @returns Number of chunks actually upserted (excluding zero vectors)
  */
 export async function upsertChunks(
     vectorize: VectorizeIndex,
@@ -22,11 +31,34 @@ export async function upsertChunks(
         embedding: number[];
         metadata: ChunkMetadata;
     }>
-): Promise<void> {
-    if (chunks.length === 0) return;
+): Promise<number> {
+    if (chunks.length === 0) return 0;
 
-    const vectors: VectorizeVector[] = chunks.map((chunk) => ({
-        id: chunk.hash,
+    // Filter out zero vectors - these are failed AI embeddings
+    const validChunks = chunks.filter((chunk) => {
+        if (isZeroVector(chunk.embedding)) {
+            console.warn(
+                `[Vectorize] Skipping chunk ${chunk.hash} - zero vector (AI embedding failed)`
+            );
+            return false;
+        }
+        return true;
+    });
+
+    if (validChunks.length === 0) {
+        console.warn('[Vectorize] No valid vectors to upsert (all zero vectors)');
+        return 0;
+    }
+
+    if (validChunks.length < chunks.length) {
+        console.warn(
+            `[Vectorize] Filtered out ${chunks.length - validChunks.length} zero vectors`
+        );
+    }
+
+    const vectors: VectorizeVector[] = validChunks.map((chunk) => ({
+        // POC: Use composite ID for complete user isolation (userId_projectId_hash)
+        id: `${chunk.metadata.userId}_${chunk.metadata.projectId}_${chunk.hash}`,
         values: chunk.embedding,
         metadata: {
             projectId: chunk.metadata.projectId,
@@ -55,6 +87,8 @@ export async function upsertChunks(
 
         await vectorize.upsert(batch);
     }
+
+    return validChunks.length;
 }
 
 /**
@@ -62,6 +96,7 @@ export async function upsertChunks(
  *
  * @param vectorize - Vectorize index binding
  * @param embedding - Query embedding vector
+ * @param userId - Filter by user (for multi-tenant isolation)
  * @param projectId - Filter by project
  * @param topK - Number of results to return
  * @returns Array of search results with scores
@@ -69,24 +104,30 @@ export async function upsertChunks(
 export async function searchChunks(
     vectorize: VectorizeIndex,
     embedding: number[],
+    userId: string,
     projectId: string,
     topK: number = 10
 ): Promise<SearchResult[]> {
     const response = await vectorize.query(embedding, {
-        topK: topK * 2, // Fetch more to filter by projectId
-        returnMetadata: true,
+        topK: Math.min(topK * 3, 20), // Fetch more to filter, max 20 when returnMetadata='all'
+        returnMetadata: 'all', // V2 API: 'all' | 'indexed' | 'none'
+        returnValues: true, // Required for accurate similarity scores
     });
 
-    // Filter by projectId and map to SearchResult
+    // Filter by userId AND projectId for multi-tenant isolation
     const results: SearchResult[] = [];
 
     for (const match of response.matches) {
         const metadata = match.metadata as Record<string, unknown> | undefined;
 
-        if (metadata && metadata.projectId === projectId) {
+        // Must match both userId AND projectId for proper isolation
+        if (metadata && metadata.userId === userId && metadata.projectId === projectId) {
+            // Extract original hash from composite ID (format: userId_projectId_hash)
+            const hashPart = match.id.split('_')[2] || match.id;
+
             results.push({
-                hash: match.id,
-                score: match.score,
+                hash: hashPart,
+                score: match.score ?? 0, // Vectorize may return undefined for unindexed vectors
                 summary: metadata.summary as string,
                 type: metadata.type as ChunkType,
                 name: (metadata.name as string) || null,
@@ -109,19 +150,26 @@ export async function searchChunks(
  * Delete chunks from Vectorize
  *
  * @param vectorize - Vectorize index binding
+ * @param userId - User ID for composite ID
+ * @param projectId - Project ID for composite ID
  * @param hashes - Array of chunk hashes to delete
  */
 export async function deleteChunks(
     vectorize: VectorizeIndex,
+    userId: string,
+    projectId: string,
     hashes: string[]
 ): Promise<void> {
     if (hashes.length === 0) return;
 
+    // POC: Convert hashes to composite IDs (userId_projectId_hash)
+    const compositeIds = hashes.map(hash => `${userId}_${projectId}_${hash}`);
+
     // Vectorize supports batch delete
-    for (let i = 0; i < hashes.length; i += VECTORIZE_BATCH_SIZE) {
-        const batch = hashes.slice(i, i + VECTORIZE_BATCH_SIZE);
+    for (let i = 0; i < compositeIds.length; i += VECTORIZE_BATCH_SIZE) {
+        const batch = compositeIds.slice(i, i + VECTORIZE_BATCH_SIZE);
         const batchNum = Math.floor(i / VECTORIZE_BATCH_SIZE) + 1;
-        const totalBatches = Math.ceil(hashes.length / VECTORIZE_BATCH_SIZE);
+        const totalBatches = Math.ceil(compositeIds.length / VECTORIZE_BATCH_SIZE);
 
         console.log(
             `[Vectorize] Deleting batch ${batchNum}/${totalBatches} (${batch.length} vectors)`

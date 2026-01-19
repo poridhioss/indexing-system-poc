@@ -210,6 +210,7 @@ async function handlePhase2(
                     languageId: chunk.languageId,
                     lines: chunk.lines,
                     charCount: chunk.charCount,
+                    filePath: chunk.filePath,
                 } as ChunkMetadata,
             }));
 
