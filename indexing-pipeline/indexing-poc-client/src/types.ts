@@ -53,10 +53,13 @@ export interface IndexInitRequest {
 }
 
 export interface IndexInitResponse {
-    status: 'indexed';
+    status: 'indexed' | 'partial';
     merkleRoot: string;
-    chunksStored: number;
-    chunksSkipped: number;
+    chunksReceived: number;
+    aiProcessed: number;    // Chunks sent to AI (cache misses)
+    cacheHits: number;      // Chunks found in global cache
+    vectorsStored: number;  // Actual vectors stored in Vectorize
+    aiErrors?: string[];    // AI processing errors if any
 }
 
 // ============================================
@@ -81,8 +84,10 @@ export interface SyncChunkMeta {
     hash: string;
     type: ChunkType;
     name: string | null;
+    languageId: string;       // Required for Phase 1
     lines: [number, number];
     charCount: number;
+    filePath: string;         // Required for Phase 1
 }
 
 export interface IndexSyncPhase1Request {
@@ -93,8 +98,9 @@ export interface IndexSyncPhase1Request {
 }
 
 export interface IndexSyncPhase1Response {
-    needed: string[];
-    cached: string[];
+    needed: string[];       // Hashes that need code (cache misses)
+    vectorized: number;     // Cache hits stored in Vectorize
+    cacheHits: number;      // Number of cache hits
 }
 
 // ============================================
@@ -123,6 +129,9 @@ export interface IndexSyncPhase2Response {
     status: 'stored';
     received: string[];
     merkleRoot: string;
+    aiProcessed: number;    // Chunks processed by AI
+    cacheHits: number;      // Chunks found in cache (should be 0 in phase 2)
+    vectorsStored: number;  // Vectors stored in Vectorize
     message: string;
 }
 

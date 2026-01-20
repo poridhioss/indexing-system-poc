@@ -136,7 +136,11 @@ export class SyncClient {
             chunks: initChunks,
         });
 
-        console.log(`Init response: ${response.chunksStored} stored, ${response.chunksSkipped} skipped`);
+        console.log(`Init response: aiProcessed=${response.aiProcessed}, cacheHits=${response.cacheHits}, vectorsStored=${response.vectorsStored}`);
+
+        if (response.aiErrors && response.aiErrors.length > 0) {
+            console.log(`AI Errors: ${response.aiErrors.join(', ')}`);
+        }
 
         // Clear dirty queue after successful init
         this.merkleBuilder.clearDirtyQueue();
@@ -145,9 +149,9 @@ export class SyncClient {
             success: true,
             merkleRoot: response.merkleRoot,
             chunksTotal: chunks.length,
-            chunksNeeded: response.chunksStored,
-            chunksCached: response.chunksSkipped,
-            message: `New project indexed successfully`,
+            chunksNeeded: response.aiProcessed,
+            chunksCached: response.cacheHits,
+            message: `New project indexed: ${response.vectorsStored} vectors stored`,
         };
     }
 
@@ -277,8 +281,16 @@ export class SyncClient {
     ): Promise<SyncResult> {
         console.log('\n--- Phase 1: Hash Check ---');
 
-        // Phase 1: Send hashes only (for dirty chunks)
-        const syncChunks: SyncChunkMeta[] = chunks.map((chunk) => chunk.toSyncPayload());
+        // Phase 1: Send hashes + metadata (no code)
+        const syncChunks: SyncChunkMeta[] = chunks.map((chunk) => ({
+            hash: chunk.hash,
+            type: chunk.type,
+            name: chunk.name,
+            languageId: chunk.language,
+            lines: [chunk.reference.lineStart, chunk.reference.lineEnd] as [number, number],
+            charCount: chunk.charCount,
+            filePath: chunk.reference.relativePath,
+        }));
 
         const phase1Response: IndexSyncPhase1Response = await this.apiClient.syncPhase1({
             phase: 1,
@@ -288,7 +300,7 @@ export class SyncClient {
         });
 
         console.log(`Needed: ${phase1Response.needed.length}`);
-        console.log(`Cached: ${phase1Response.cached.length}`);
+        console.log(`Cache hits: ${phase1Response.cacheHits} (vectorized: ${phase1Response.vectorized})`);
 
         // If nothing needed, just update merkle root
         if (phase1Response.needed.length === 0) {
@@ -309,7 +321,7 @@ export class SyncClient {
                 merkleRoot,
                 chunksTotal: chunks.length,
                 chunksNeeded: 0,
-                chunksCached: phase1Response.cached.length,
+                chunksCached: phase1Response.cacheHits,
                 message: 'All chunks cached, merkle root updated',
             };
         }
@@ -345,6 +357,7 @@ export class SyncClient {
         });
 
         console.log(`Received: ${phase2Response.received.length}`);
+        console.log(`AI processed: ${phase2Response.aiProcessed}, vectors stored: ${phase2Response.vectorsStored}`);
         console.log(`Message: ${phase2Response.message}`);
 
         // Clear dirty queue
@@ -355,8 +368,8 @@ export class SyncClient {
             merkleRoot: phase2Response.merkleRoot,
             chunksTotal: chunks.length,
             chunksNeeded: phase1Response.needed.length,
-            chunksCached: phase1Response.cached.length,
-            message: `Synced ${phase1Response.needed.length} new chunks`,
+            chunksCached: phase1Response.cacheHits,
+            message: `Synced ${phase2Response.vectorsStored} vectors (${phase1Response.cacheHits} cache hits)`,
         };
     }
 

@@ -1,4 +1,4 @@
-# Complete Indexing Pipeline (Phase 1)
+# Code Indexing Pipeline with Cloudflare Worker
 
 After building the client-side components (file watcher, Merkle tree, semantic chunking, chunk hashing), this lab brings everything together. You'll deploy a Cloudflare Worker for the server-side, then integrate it with a complete client that handles all sync scenarios: new projects, reopens, and live editing.
 

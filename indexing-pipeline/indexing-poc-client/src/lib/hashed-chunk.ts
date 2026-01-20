@@ -102,30 +102,34 @@ export class HashedChunk {
     }
 
     /**
-     * Convert to metadata-only object for sending to server (Phase 2)
-     * NO code included - only hash and reference info
+     * Convert to metadata-only object for sending to server (Phase 1)
+     * NO code included - only hash, metadata, and reference info
      */
     toSyncPayload(): ChunkSyncPayload {
         return {
             hash: this.hash,
             type: this.type,
             name: this.name,
+            languageId: this.language,
             lines: [this.reference.lineStart, this.reference.lineEnd],
             charCount: this.charCount,
+            filePath: this.reference.relativePath,
         };
     }
 }
 
 /**
- * Payload sent to server during Phase 2 (metadata exchange)
- * Contains hash + minimal metadata, NO code
+ * Payload sent to server during Phase 1 (metadata exchange)
+ * Contains hash + metadata, NO code
  */
 export interface ChunkSyncPayload {
     hash: string;
     type: ChunkType;
     name: string | null;
+    languageId: string;
     lines: [number, number];  // [lineStart, lineEnd]
     charCount: number;
+    filePath: string;
 }
 
 /**

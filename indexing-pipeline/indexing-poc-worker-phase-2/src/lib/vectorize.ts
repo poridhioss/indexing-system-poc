@@ -9,6 +9,25 @@ import type {
 // Vectorize batch size limit
 const VECTORIZE_BATCH_SIZE = 100;
 
+// Vectorize max ID length is 64 bytes
+const MAX_VECTOR_ID_LENGTH = 64;
+
+/**
+ * Generate a short, unique vector ID that fits within Vectorize's 64-byte limit.
+ * Format: {shortUserId}_{shortProjectId}_{shortHash}
+ *
+ * We use first 8 chars of each component to stay well under the limit:
+ * 8 + 1 + 8 + 1 + 16 = 34 bytes (safe margin)
+ */
+function generateVectorId(userId: string, projectId: string, hash: string): string {
+    // Use short prefixes to stay under 64 bytes
+    const shortUserId = userId.substring(0, 8);
+    const shortProjectId = projectId.substring(0, 8);
+    const shortHash = hash.substring(0, 16); // 16 chars of SHA-256 is still unique enough
+
+    return `${shortUserId}_${shortProjectId}_${shortHash}`;
+}
+
 /**
  * Check if an embedding is a zero vector (fallback from failed AI)
  */
@@ -57,8 +76,8 @@ export async function upsertChunks(
     }
 
     const vectors: VectorizeVector[] = validChunks.map((chunk) => ({
-        // POC: Use composite ID for complete user isolation (userId_projectId_hash)
-        id: `${chunk.metadata.userId}_${chunk.metadata.projectId}_${chunk.hash}`,
+        // POC: Use composite ID for complete user isolation (shortened to fit 64-byte limit)
+        id: generateVectorId(chunk.metadata.userId, chunk.metadata.projectId, chunk.hash),
         values: chunk.embedding,
         metadata: {
             projectId: chunk.metadata.projectId,
@@ -122,7 +141,8 @@ export async function searchChunks(
 
         // Must match both userId AND projectId for proper isolation
         if (metadata && metadata.userId === userId && metadata.projectId === projectId) {
-            // Extract original hash from composite ID (format: userId_projectId_hash)
+            // Extract short hash from composite ID (format: shortUserId_shortProjectId_shortHash)
+            // Note: This is the truncated hash, not the full hash
             const hashPart = match.id.split('_')[2] || match.id;
 
             results.push({
@@ -162,8 +182,8 @@ export async function deleteChunks(
 ): Promise<void> {
     if (hashes.length === 0) return;
 
-    // POC: Convert hashes to composite IDs (userId_projectId_hash)
-    const compositeIds = hashes.map(hash => `${userId}_${projectId}_${hash}`);
+    // POC: Convert hashes to composite IDs (shortened to fit 64-byte limit)
+    const compositeIds = hashes.map(hash => generateVectorId(userId, projectId, hash));
 
     // Vectorize supports batch delete
     for (let i = 0; i < compositeIds.length; i += VECTORIZE_BATCH_SIZE) {

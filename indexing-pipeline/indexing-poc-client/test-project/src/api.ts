@@ -8,11 +8,25 @@ export interface ApiResponse<T> {
     message: string;
 }
 // Hello world
+// Hello world
+// Hello world
+// Hello world
+// Hello world
+// Hello world
+// Hello world
+// Hello world
+// Hello world
+// Hello world
+// Hello world
+// Hello world
+// Hello world
+// Hello world
+// Hello world
 export interface ApiError {
     error: string;
     code: number;
 }
-
+// Hello World
 export async function fetchData<T>(url: string): Promise<ApiResponse<T>> {
     const response = await fetch(url);
     const data = await response.json();

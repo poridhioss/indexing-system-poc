@@ -27,7 +27,7 @@ const __dirname = path.dirname(__filename);
 
 // Configuration
 // const BASE_URL = 'http://127.0.0.1:8787';
-const BASE_URL = 'https://indexing-pipeline-worker-poc.fazlulkarim362.workers.dev/';
+const BASE_URL = 'https://indexing-poc-phase-2.fazlulkarim362.workers.dev';
 const AUTH_TOKEN = 'dev-token-watchertest';
 const PROJECT_ROOT = path.resolve(__dirname, '../test-project');
 const EXTENSIONS = ['.ts', '.js'];

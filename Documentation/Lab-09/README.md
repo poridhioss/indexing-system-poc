@@ -1,4 +1,4 @@
-# AI-Powered Code Indexing Pipeline (Phase 2)
+# AI-Powered Semantic Code Search
 
 Building on the Phase 1 indexing pipeline from Lab-08, this lab extends the Cloudflare Worker with AI capabilities. You'll add code summarization using Workers AI, generate embeddings for semantic search, and store vectors in Cloudflare Vectorize with **multi-tenant isolation** and **global embedding cache** for 70-90% AI cost savings.
 
@@ -51,203 +51,143 @@ The previous design lacked file path information, making it impossible to naviga
 
 ### High-Level System Architecture
 
-```mermaid
-flowchart TB
-    subgraph Clients
-        UA[User A Client]
-        UB[User B Client]
-        UC[User C Client]
-    end
+Multiple clients connect to our Cloudflare Worker through the Hono API Router. All requests pass through Auth Middleware which extracts the userId from the Bearer token. The router then directs requests to the appropriate endpoint handler.
 
-    subgraph "Cloudflare Worker"
-        API[Hono API Router]
-        AUTH[Auth Middleware]
+![High-Level Architecture](./images/indexing-1.svg)
 
-        subgraph "Route Handlers"
-            INIT["/index/init"]
-            CHECK["/index/check"]
-            SYNC["/index/sync"]
-            SEARCH["/search"]
-        end
+**Components:**
+- **Hono API Router**: Lightweight, fast routing for all incoming requests
+- **Auth Middleware**: Validates Bearer tokens and extracts userId for multi-tenant isolation
+- **Route Handlers**: Four main endpoints - `/index/check`, `/index/init`, `/index/sync`, and `/search`
 
-        subgraph "Core Libraries"
-            subgraph "AI Processing (ai.ts)"
-                SUMMARIZE[generateSummaries<br/>Qwen 2.5 Coder 32B]
-                EMBED[generateEmbeddings<br/>BGE Large 1024d]
-                QUERY_EMBED[generateQueryEmbedding<br/>with retry logic]
-            end
-            VEC[Vectorize Ops<br/>upsertChunks / searchChunks]
-            CACHE[Embedding Cache<br/>getMany / setMany]
-            KV_LIB[KV Store<br/>merkle roots]
-        end
-    end
+### AI Processing Layer
 
-    subgraph "Cloudflare Services"
-        KV[(KV Namespace<br/>Global Cache + Merkle)]
-        VECTORIZE[(Vectorize Index<br/>Multi-tenant Vectors)]
-        WORKERS_AI[Workers AI<br/>Free 10K neurons/day]
-    end
+The AI processing layer handles code summarization and embedding generation using Cloudflare Workers AI.
 
-    UA & UB & UC -->|"1. HTTP Request"| API
-    API -->|"2. Validate Token"| AUTH
-    AUTH -->|"3. Route"| INIT & CHECK & SYNC & SEARCH
+![AI Processing](./images/indexing-2.svg)
 
-    INIT & SYNC -->|"4. Check cache"| CACHE
-    CACHE -->|"5. Get/Set"| KV
-    INIT & SYNC -->|"6. For misses"| SUMMARIZE
-    SUMMARIZE -->|"7. Code → Summary"| WORKERS_AI
-    SUMMARIZE -->|"8. Summaries"| EMBED
-    EMBED -->|"9. Summary → Vector"| WORKERS_AI
-    INIT & SYNC -->|"10. Store vectors"| VEC
-    VEC -->|"11. Upsert"| VECTORIZE
+**Three AI Functions:**
+- **generateSummaries**: Takes code chunks and produces natural language descriptions using `@cf/qwen/qwen2.5-coder-32b-instruct`
+- **generateEmbeddings**: Converts summaries into 1024-dimensional vectors using `@cf/baai/bge-large-en-v1.5`
+- **generateQueryEmbeddings**: Converts search queries into vectors for similarity matching
 
-    CHECK -->|"4. Get merkle"| KV_LIB
-    KV_LIB --> KV
+### Worker Services Layer
 
-    SEARCH -->|"4. Query text"| QUERY_EMBED
-    QUERY_EMBED -->|"5. Text → Vector"| WORKERS_AI
-    SEARCH -->|"6. Search vectors"| VEC
-    VEC -->|"7. Query + Filter"| VECTORIZE
-```
+The worker uses two storage backends - KV Namespace for caching and Vectorize for vector storage.
 
-### Request Flow Sequences
+![Worker Services](./images/indexing-3.svg)
 
-**Indexing Flow (`/index/init` or `/index/sync`):**
-1. Client sends chunks with code → API Router
-2. Auth middleware validates Bearer token, extracts userId
-3. Route handler checks embedding cache for all chunk hashes
-4. Cache HITs: Reuse existing summary + embedding (no AI cost)
-5. Cache MISSes: Send code to `generateSummaries()` → Workers AI (Qwen 2.5)
-6. Summaries sent to `generateEmbeddings()` → Workers AI (BGE Large)
-7. Valid embeddings (non-zero) stored in global cache
-8. All embeddings upserted to Vectorize with composite ID `{userId}_{projectId}_{hash}`
+**Storage Components:**
+- **Embedding Cache**: Stores AI-generated summaries and embeddings globally by content hash
+- **KV Store**: Stores merkle roots for change detection per user/project
+- **Vectorize Ops**: Handles vector upsert and search operations with multi-tenant filtering
 
-**Search Flow (`/search`):**
-1. Client sends natural language query → API Router
-2. Auth middleware validates token, extracts userId
-3. Query sent to `generateQueryEmbedding()` → Workers AI (BGE Large)
-4. Embedding used to query Vectorize (topK × 3 to allow filtering)
-5. Results filtered by userId AND projectId for tenant isolation
-6. Top K results returned with scores, summaries, and file paths
+## Endpoint Flow Diagrams
 
-### Multi-Tenant Data Isolation
+### 1. `/index/init` - First-Time Project Indexing
 
-```mermaid
-flowchart LR
-    subgraph "Global Embedding Cache (KV)"
-        E1["embedding:hash001<br/>{summary, embedding}"]
-        E2["embedding:hash002<br/>{summary, embedding}"]
-    end
+This endpoint handles the initial indexing of a project. It processes all code chunks, checks the global cache for existing embeddings, and stores new vectors.
 
-    subgraph "User-Isolated Vectors (Vectorize)"
-        subgraph "User A Vectors"
-            VA1["12345_projectA_hash001"]
-            VA2["12345_projectA_hash002"]
-        end
-        subgraph "User B Vectors"
-            VB1["67890_projectB_hash001"]
-            VB2["67890_projectB_hash003"]
-        end
-    end
+![Index Init Flow](./images/indexing-4.svg)
 
-    E1 -->|"User A indexes hash001"| VA1
-    E1 -->|"User B indexes hash001<br/>(cache HIT - no AI cost!)"| VB1
-    E2 --> VA2
-```
+**Flow:**
+1. Client sends code chunks with metadata (projectId, merkleRoot, code, filePath, etc.)
+2. Worker checks the global embedding cache for each chunk's content hash
+3. **Cache HIT** (green path): Retrieve existing summary + embedding from cache
+4. **Cache MISS** (red path): Send to AI for summarization and embedding generation, then cache the result
+5. Both paths converge to add user-specific metadata (filePath, projectId, userId)
+6. Store vectors in Vectorize with composite ID: `{userId}_{projectId}_{hash}`
 
-**Key Insight**: Users A and B both have `hash001` (same code content). The embedding is computed once and cached globally. Each user gets their own vector in Vectorize with isolated metadata (different file paths, project IDs).
+**Key Point:** The embedding is shared globally, but each user gets their own vector with their own metadata.
 
-### Two-Phase Sync Protocol with Embedding Cache
+### 2. `/index/check` - Change Detection
 
-```mermaid
-sequenceDiagram
-    participant Client
-    participant Worker
-    participant Cache as Embedding Cache (KV)
-    participant AI as Workers AI
-    participant Vec as Vectorize
+A lightweight endpoint that compares merkle roots to detect if re-indexing is needed. No AI calls involved.
 
-    Note over Client,Vec: Phase 1: Metadata Only (No Code Transfer)
-    Client->>Worker: POST /sync {phase:1, chunks:[{hash, metadata}]}
-    Worker->>Cache: Check embedding cache for all hashes
-    Cache-->>Worker: Returns hits and misses
+![Index Check Flow](./images/indexing-5.svg)
 
-    alt Cache Hits Found
-        Worker->>Vec: Upsert cached embeddings with user metadata
-    end
+**Flow:**
+1. Client sends current merkleRoot for their project
+2. Worker retrieves stored merkle root from KV
+3. Compare the two roots
+4. **Match** (green): Return `changed: false` - no sync needed
+5. **Different** (red): Return `changed: true` - client should sync
 
-    Worker-->>Client: {needed: [miss_hashes], cacheHits: N}
+**Key Point:** O(1) complexity - just a single KV lookup and string comparison.
 
-    Note over Client,Vec: Phase 2: Code Only for Misses
-    Client->>Worker: POST /sync {phase:2, chunks:[{hash, code}]}
-    Worker->>AI: Generate summaries
-    AI-->>Worker: Summaries
-    Worker->>AI: Generate embeddings
-    AI-->>Worker: 1024-dim vectors
+### 3. `/index/sync` - Two-Phase Incremental Sync
 
-    alt Valid Embeddings (non-zero)
-        Worker->>Cache: Store in global cache
-        Worker->>Vec: Upsert to Vectorize
-    end
+This endpoint uses a two-phase protocol to minimize data transfer. Phase 1 identifies what's needed, Phase 2 only transfers missing code.
 
-    Worker-->>Client: {status: "stored", vectorsStored: N}
-```
+**Phase 1: Metadata Only (No Code Transfer)**
 
-### AI Processing Pipeline
+![Sync Phase 1](./images/indexing-6.svg)
 
-```mermaid
-flowchart LR
-    subgraph Input
-        A[Code Chunks]
-    end
+**Phase 1 Flow:**
+1. Client sends hashes + metadata (NO code content)
+2. Worker checks embedding cache for all hashes
+3. **Cache HIT** (green): Get cached embedding, add user metadata, store in Vectorize immediately
+4. **Cache MISS** (red): Add hash to "needed" list
+5. Return response with `needed` array (hashes that require code) and `cacheHits` count
 
-    subgraph "AI Processing"
-        B[Summarization<br/>Qwen 2.5 Coder 32B]
-        C[Embedding<br/>BGE Large 1024d]
-    end
+**Phase 2: Code Only for Misses**
 
-    subgraph "Validation"
-        D{Zero Vector<br/>Check}
-    end
+![Sync Phase 2](./images/indexing-7.svg)
 
-    subgraph "Storage"
-        E[Global Cache]
-        F[Vectorize]
-    end
+**Phase 2 Flow:**
+1. Client sends code ONLY for hashes in the `needed` array
+2. Worker processes with AI (summarize + embed)
+3. Cache the results globally for future users
+4. Add user-specific metadata and store in Vectorize
 
-    A -->|"code + languageId"| B
-    B -->|"natural language<br/>summaries"| C
-    C -->|"1024-dim vectors"| D
-    D -->|"Valid vectors"| E
-    D -->|"Valid vectors"| F
-    D -->|"Zero vectors<br/>(AI failed)"| G[Discard]
-```
+**Key Point:** If 90% of chunks hit the cache, only 10% of code content needs to be transferred in Phase 2.
 
-### Search Flow with Multi-Tenant Filtering
+### 4. Multi-Tenant Data Isolation
 
-```mermaid
-sequenceDiagram
-    participant Client
-    participant Worker
-    participant AI as Workers AI
-    participant Vec as Vectorize
+This is the core architectural pattern that enables cost sharing while maintaining security.
 
-    Client->>Worker: POST /search {query, projectId}
-    Note over Worker: Extract userId from auth token
+![Multi-Tenant Isolation](./images/indexing-8.svg)
 
-    Worker->>AI: Generate query embedding
-    AI-->>Worker: 1024-dim query vector
+**Two-Layer Architecture:**
 
-    alt Zero Vector (AI failed)
-        Worker-->>Client: {results: [], warning: "embedding failed"}
-    else Valid Embedding
-        Worker->>Vec: Query with topK * 3
-        Vec-->>Worker: All matching vectors
+**Layer 1 - Global Embedding Cache (Shared):**
+- Key: `embedding:{contentHash}`
+- Value: `{summary, embedding}`
+- Shared across ALL users - same code = same hash = same embedding
 
-        Note over Worker: Filter by userId AND projectId
-        Worker-->>Client: {results: [...], took: ms}
-    end
-```
+**Layer 2 - Vector Storage (Isolated per User):**
+- Each user has their own vectors in Vectorize
+- Vector ID format: `{userId}_{projectId}_{hash}`
+- Metadata includes user-specific data: filePath, lines, projectId
+
+**Example:**
+- Alice indexes `add(a,b)` → hash001 → AI generates embedding → cached globally → stored as `alice_proj-a_hash001`
+- Bob indexes same `add(a,b)` → hash001 → **cache HIT** (no AI cost!) → stored as `bob_proj-b_hash001`
+- Both users have the same embedding but different file paths and project IDs
+
+### 5. Two-Phase Sync Sequence
+
+This sequence diagram shows the complete flow of the two-phase sync protocol with all service interactions.
+
+![Two-Phase Sync Sequence](./images/indexing-9.svg)
+
+**Complete Sequence:**
+
+**Phase 1 (Metadata Only):**
+1. Client sends `POST /sync` with `phase:1`, chunks contain `{hash, metadata}` but NO code
+2. Worker checks embedding cache for all hashes
+3. Cache returns hits and misses
+4. For cache hits: Worker upserts to Vectorize with user metadata immediately
+5. Worker returns `{needed: [miss_hashes], cacheHits: N}`
+
+**Phase 2 (Code for Misses):**
+1. Client sends `POST /sync` with `phase:2`, chunks contain `{hash, code}` only for needed hashes
+2. Worker sends code to Workers AI for summarization
+3. Workers AI returns summaries
+4. Worker sends summaries to Workers AI for embedding generation
+5. Workers AI returns 1024-dimensional vectors
+6. For valid (non-zero) embeddings: Store in global cache AND upsert to Vectorize
+7. Worker returns `{status: "stored", vectorsStored: N}`
 
 ## API Endpoints
 
@@ -299,14 +239,6 @@ indexing-poc-worker-phase-2/
 └── tsconfig.json
 ```
 
-### Dependencies
-
-| Package | Version | Purpose |
-|---------|---------|---------|
-| `hono` | ^4.0.0 | Lightweight web framework |
-| `wrangler` | ^3.0.0 | Cloudflare CLI |
-| `typescript` | ^5.0.0 | TypeScript compiler |
-
 ### Cloudflare Services Used
 
 | Service | Purpose | Free Tier |
@@ -354,25 +286,15 @@ Copy the `id` value for your `wrangler.toml`.
 npx wrangler kv:namespace create INDEX_KV --preview
 ```
 
-Copy the preview `id` as well.
-
 ### Step 3: Create Vectorize Index
 
 ```bash
 npx wrangler vectorize create vectorize-poc --dimensions=1024 --metric=cosine
 ```
 
-**Expected output:**
-```
-🚧 Creating index: 'vectorize-poc'
-✅ Successfully created a new Vectorize index: 'vectorize-poc'
-```
-
 **Important**: BGE Large produces 1024-dimensional vectors. The metric must be `cosine` for semantic similarity.
 
 ### Step 4: Configure wrangler.toml
-
-Update your `wrangler.toml` with the created resources:
 
 ```toml
 name = "indexing-poc-phase-2"
@@ -380,24 +302,19 @@ main = "src/index.ts"
 compatibility_date = "2024-11-24"
 compatibility_flags = ["nodejs_compat"]
 
-# Your Cloudflare account ID (from wrangler whoami)
 account_id = "your-account-id-here"
 
 [vars]
-# Static JWT token for POC (replace with proper auth in production)
 DEV_TOKEN = "dev-token-12345"
 
-# Workers AI binding (FREE - 10K neurons/day)
 [ai]
 binding = "AI"
 
-# KV namespace for merkle roots and embedding cache
 [[kv_namespaces]]
 binding = "INDEX_KV"
-id = "your-kv-namespace-id"           # From step 2
-preview_id = "your-preview-kv-id"     # From step 2
+id = "your-kv-namespace-id"
+preview_id = "your-preview-kv-id"
 
-# Vectorize for embeddings storage (FREE - 5M vectors)
 [[vectorize]]
 binding = "VECTORIZE"
 index_name = "vectorize-poc"
@@ -409,222 +326,9 @@ index_name = "vectorize-poc"
 npx wrangler deploy
 ```
 
-**Expected output:**
-```
-Total Upload: 125.43 KiB / gzip: 27.84 KiB
-Your worker has access to the following bindings:
-- KV Namespaces:
-  - INDEX_KV: c682d9b69609426584b8bb43e8efad26
-- Vectorize Indexes:
-  - VECTORIZE: vectorize-poc
-- AI:
-  - Name: AI
-- Vars:
-  - DEV_TOKEN: "dev-token-12345"
-Uploaded indexing-poc-phase-2
-Deployed indexing-poc-phase-2 triggers
-  https://indexing-poc-phase-2.your-subdomain.workers.dev
-```
-
 Save your worker URL for testing.
 
-## Part 3: Core Implementation
-
-### Type Definitions
-
-The type system defines the contract between client and server:
-
-```typescript
-// Chunk metadata stored in Vectorize
-export interface ChunkMetadata {
-    projectId: string;
-    userId: string;
-    summary: string;
-    type: ChunkType;
-    name: string | null;
-    languageId: string;
-    lines: [number, number];
-    charCount: number;
-    filePath: string;  // NEW: Track file location
-}
-
-// Init response with detailed metrics
-export interface IndexInitResponse {
-    status: 'indexed' | 'partial';
-    merkleRoot: string;
-    chunksReceived: number;
-    aiProcessed: number;      // Chunks sent to AI
-    cacheHits: number;        // Chunks found in cache
-    vectorsStored: number;    // Actual vectors stored (excludes failures)
-    aiErrors?: string[];
-}
-```
-
-### Global Embedding Cache
-
-The embedding cache stores AI results by content hash, enabling cross-user sharing:
-
-```typescript
-// Key format: embedding:{hash}
-// Value: { summary: string, embedding: number[] }
-
-export async function getManyCachedEmbeddings(
-    kv: KVNamespace,
-    hashes: string[]
-): Promise<Map<string, { summary: string; embedding: number[] }>> {
-    const results = new Map();
-
-    // Batch fetch all hashes
-    const promises = hashes.map(async (hash) => {
-        const key = `embedding:${hash}`;
-        const value = await kv.get(key, 'json');
-        if (value) {
-            results.set(hash, value);
-        }
-    });
-
-    await Promise.all(promises);
-    return results;
-}
-
-export async function setManyCachedEmbeddings(
-    kv: KVNamespace,
-    items: Array<{ hash: string; summary: string; embedding: number[] }>
-): Promise<void> {
-    // Store with 30-day TTL
-    const promises = items.map((item) =>
-        kv.put(
-            `embedding:${item.hash}`,
-            JSON.stringify({ summary: item.summary, embedding: item.embedding }),
-            { expirationTtl: 30 * 24 * 60 * 60 }
-        )
-    );
-
-    await Promise.all(promises);
-}
-```
-
-### Multi-Tenant Vector Storage
-
-Vectors use composite IDs for complete user isolation:
-
-```typescript
-export async function upsertChunks(
-    vectorize: VectorizeIndex,
-    chunks: Array<{ hash: string; embedding: number[]; metadata: ChunkMetadata }>
-): Promise<number> {
-    // Filter out zero vectors (failed AI)
-    const validChunks = chunks.filter((chunk) => {
-        if (chunk.embedding.every((v) => v === 0)) {
-            console.warn(`Skipping zero vector for ${chunk.hash}`);
-            return false;
-        }
-        return true;
-    });
-
-    const vectors = validChunks.map((chunk) => ({
-        // Composite ID: userId_projectId_hash
-        id: `${chunk.metadata.userId}_${chunk.metadata.projectId}_${chunk.hash}`,
-        values: chunk.embedding,
-        metadata: {
-            projectId: chunk.metadata.projectId,
-            userId: chunk.metadata.userId,
-            summary: chunk.metadata.summary,
-            type: chunk.metadata.type,
-            name: chunk.metadata.name || '',
-            languageId: chunk.metadata.languageId,
-            lineStart: chunk.metadata.lines[0],
-            lineEnd: chunk.metadata.lines[1],
-            charCount: chunk.metadata.charCount,
-            filePath: chunk.metadata.filePath,
-        },
-    }));
-
-    // Batch upsert
-    for (let i = 0; i < vectors.length; i += 100) {
-        const batch = vectors.slice(i, i + 100);
-        await vectorize.upsert(batch);
-    }
-
-    return validChunks.length;
-}
-```
-
-### Search with Tenant Filtering
-
-```typescript
-export async function searchChunks(
-    vectorize: VectorizeIndex,
-    embedding: number[],
-    userId: string,
-    projectId: string,
-    topK: number = 10
-): Promise<SearchResult[]> {
-    const response = await vectorize.query(embedding, {
-        topK: Math.min(topK * 3, 20),  // Fetch more to filter
-        returnMetadata: 'all',
-        returnValues: true,
-    });
-
-    const results: SearchResult[] = [];
-
-    for (const match of response.matches) {
-        const metadata = match.metadata as Record<string, unknown>;
-
-        // CRITICAL: Filter by BOTH userId AND projectId
-        if (metadata?.userId === userId && metadata?.projectId === projectId) {
-            results.push({
-                hash: match.id.split('_')[2],  // Extract hash from composite ID
-                score: match.score ?? 0,
-                summary: metadata.summary as string,
-                type: metadata.type as ChunkType,
-                name: (metadata.name as string) || null,
-                languageId: metadata.languageId as string,
-                lines: [metadata.lineStart as number, metadata.lineEnd as number],
-                filePath: metadata.filePath as string,
-            });
-        }
-
-        if (results.length >= topK) break;
-    }
-
-    return results;
-}
-```
-
-### AI Processing with Error Handling
-
-```typescript
-const AI_TIMEOUT_MS = 25000;  // 25s for reliability
-const QUERY_TIMEOUT_MS = 15000;  // 15s for search queries
-
-export async function generateQueryEmbedding(
-    ai: Ai,
-    query: string
-): Promise<number[]> {
-    const MAX_RETRIES = 2;
-
-    for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
-        const response = await withTimeout(
-            ai.run(EMBEDDING_MODEL, { text: [query] }),
-            QUERY_TIMEOUT_MS
-        );
-
-        if (response?.data?.[0]) {
-            return response.data[0];
-        }
-
-        if (attempt < MAX_RETRIES) {
-            await new Promise(resolve => setTimeout(resolve, 500));
-        }
-    }
-
-    // Return zero vector on failure (will return empty results)
-    return new Array(1024).fill(0);
-}
-```
-
-## Part 4: Testing with curl and jq
+## Part 3: Testing with curl and jq
 
 Set your worker URL:
 
@@ -638,40 +342,7 @@ export WORKER_URL="https://indexing-poc-phase-2.your-subdomain.workers.dev"
 curl -s "$WORKER_URL/v1/health" | jq .
 ```
 
-**Expected:**
-```json
-{
-  "status": "ok",
-  "timestamp": "2026-01-19T10:00:00.000Z",
-  "version": "1.0.0"
-}
-```
-
-### Test 2: API Info
-
-```bash
-curl -s "$WORKER_URL/" | jq .
-```
-
-**Expected:**
-```json
-{
-  "name": "indexing-poc-worker-phase-2",
-  "version": "2.0.0",
-  "description": "AI-powered code indexing with multi-tenant isolation",
-  "endpoints": {
-    "health": "GET /v1/health",
-    "init": "POST /v1/index/init",
-    "check": "POST /v1/index/check",
-    "sync": "POST /v1/index/sync",
-    "search": "POST /v1/search",
-    "summarize": "POST /v1/summarize/batch",
-    "embeddings": "POST /v1/embeddings"
-  }
-}
-```
-
-### Test 3: Initialize Project (User A)
+### Test 2: Initialize Project (Alice)
 
 ```bash
 curl -s -X POST "$WORKER_URL/v1/index/init" \
@@ -690,16 +361,6 @@ curl -s -X POST "$WORKER_URL/v1/index/init" \
         "lines": [1, 1],
         "charCount": 38,
         "filePath": "src/math/add.ts"
-      },
-      {
-        "hash": "hash002",
-        "code": "function multiply(x, y) { return x * y; }",
-        "type": "function",
-        "name": "multiply",
-        "languageId": "javascript",
-        "lines": [3, 3],
-        "charCount": 42,
-        "filePath": "src/math/multiply.ts"
       }
     ]
   }' | jq .
@@ -710,14 +371,14 @@ curl -s -X POST "$WORKER_URL/v1/index/init" \
 {
   "status": "indexed",
   "merkleRoot": "merkle-alice-001",
-  "chunksReceived": 2,
-  "aiProcessed": 2,
+  "chunksReceived": 1,
+  "aiProcessed": 1,
   "cacheHits": 0,
-  "vectorsStored": 2
+  "vectorsStored": 1
 }
 ```
 
-### Test 4: Initialize Same Code (User B) - Cache Hit!
+### Test 3: Initialize Same Code (Bob) - Cache Hit!
 
 ```bash
 curl -s -X POST "$WORKER_URL/v1/index/init" \
@@ -736,16 +397,6 @@ curl -s -X POST "$WORKER_URL/v1/index/init" \
         "lines": [1, 1],
         "charCount": 38,
         "filePath": "lib/utils/add.js"
-      },
-      {
-        "hash": "hash002",
-        "code": "function multiply(x, y) { return x * y; }",
-        "type": "function",
-        "name": "multiply",
-        "languageId": "javascript",
-        "lines": [5, 5],
-        "charCount": 42,
-        "filePath": "lib/utils/multiply.js"
       }
     ]
   }' | jq .
@@ -756,14 +407,14 @@ curl -s -X POST "$WORKER_URL/v1/index/init" \
 {
   "status": "indexed",
   "merkleRoot": "merkle-bob-001",
-  "chunksReceived": 2,
+  "chunksReceived": 1,
   "aiProcessed": 0,
-  "cacheHits": 2,
-  "vectorsStored": 2
+  "cacheHits": 1,
+  "vectorsStored": 1
 }
 ```
 
-### Test 5: Check for Changes
+### Test 4: Check for Changes
 
 ```bash
 curl -s -X POST "$WORKER_URL/v1/index/check" \
@@ -775,7 +426,7 @@ curl -s -X POST "$WORKER_URL/v1/index/check" \
   }' | jq .
 ```
 
-**Expected (no change):**
+**Expected:**
 ```json
 {
   "changed": false,
@@ -783,7 +434,7 @@ curl -s -X POST "$WORKER_URL/v1/index/check" \
 }
 ```
 
-### Test 6: Sync Phase 1 (Metadata Only)
+### Test 5: Sync Phase 1 (Metadata Only)
 
 ```bash
 curl -s -X POST "$WORKER_URL/v1/index/sync" \
@@ -825,7 +476,7 @@ curl -s -X POST "$WORKER_URL/v1/index/sync" \
 }
 ```
 
-### Test 7: Sync Phase 2 (Code for Misses)
+### Test 6: Sync Phase 2 (Code for Misses)
 
 ```bash
 curl -s -X POST "$WORKER_URL/v1/index/sync" \
@@ -857,13 +508,11 @@ curl -s -X POST "$WORKER_URL/v1/index/sync" \
   "received": ["hash003-new"],
   "merkleRoot": "merkle-alice-002",
   "aiProcessed": 1,
-  "cacheHits": 0,
-  "vectorsStored": 1,
-  "message": "Chunks processed with AI and stored in vector database"
+  "vectorsStored": 1
 }
 ```
 
-### Test 8: Semantic Search (User A)
+### Test 7: Semantic Search
 
 **Wait 10-15 seconds** after indexing for Vectorize to process, then:
 
@@ -884,31 +533,18 @@ curl -s -X POST "$WORKER_URL/v1/search" \
   "results": [
     {
       "hash": "hash001",
-      "score": 0.8955451,
-      "summary": "adds two numbers together, takes two numbers as input, returns their sum",
+      "score": 0.89,
+      "summary": "adds two numbers together...",
       "type": "function",
       "name": "add",
-      "languageId": "javascript",
-      "lines": [1, 1],
       "filePath": "src/math/add.ts"
-    },
-    {
-      "hash": "hash002",
-      "score": 0.8031679,
-      "summary": "multiplies two numbers together, takes two numbers as input, returns their product",
-      "type": "function",
-      "name": "multiply",
-      "languageId": "javascript",
-      "lines": [3, 3],
-      "filePath": "src/math/multiply.ts"
     }
   ],
-  "query": "add two numbers together",
-  "took": 1245
+  "query": "add two numbers together"
 }
 ```
 
-### Test 9: Search Isolation (User B sees different paths)
+### Test 8: Search Isolation (Bob sees different paths)
 
 ```bash
 curl -s -X POST "$WORKER_URL/v1/search" \
@@ -927,156 +563,39 @@ curl -s -X POST "$WORKER_URL/v1/search" \
   "results": [
     {
       "hash": "hash001",
-      "score": 0.8955451,
-      "summary": "adds two numbers together, takes two numbers as input, returns their sum",
-      "type": "function",
-      "name": "add",
-      "languageId": "javascript",
-      "lines": [1, 1],
+      "score": 0.89,
+      "summary": "adds two numbers together...",
       "filePath": "lib/utils/add.js"
     }
-  ],
-  "query": "add two numbers together",
-  "took": 987
-}
-```
-
-### Test 10: Standalone Summarization
-
-```bash
-curl -s -X POST "$WORKER_URL/v1/summarize/batch" \
-  -H "Authorization: Bearer dev-token-12345" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "chunks": [
-      {"text": "function validateEmail(email) { return /^[^\\s@]+@[^\\s@]+\\.[^\\s@]+$/.test(email); }"}
-    ],
-    "languageId": "javascript"
-  }' | jq .
-```
-
-**Expected:**
-```json
-{
-  "summaries": [
-    "validates email format using regex pattern, takes email string as input, returns boolean indicating validity"
   ]
 }
 ```
 
-### Test 11: Standalone Embeddings (OpenAI-compatible)
+## Part 4: Key Concepts
 
-```bash
-curl -s -X POST "$WORKER_URL/v1/embeddings" \
-  -H "Authorization: Bearer dev-token-12345" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "input": ["validates email format", "sends notification to user"]
-  }' | jq '.data | length, .model'
-```
-
-**Expected:**
-```
-2
-"@cf/baai/bge-large-en-v1.5"
-```
-
-## Part 5: Key Concepts
-
-### 1. Zero Vector Filtering
-
-AI can fail (timeout, rate limit, etc.). When it does, we return zero vectors as fallback. These are filtered at multiple points:
-
-```typescript
-// Never cache zero vectors
-const validEmbeddings = embeddings.filter(
-    (item) => !item.embedding.every((v) => v === 0)
-);
-
-// Never store zero vectors in Vectorize
-const validChunks = chunks.filter(
-    (chunk) => !chunk.embedding.every((v) => v === 0)
-);
-```
-
-### 2. Composite Vector IDs
-
-Format: `{userId}_{projectId}_{hash}`
-
-This ensures:
-- Same user can have same hash in different projects
-- Different users can have same hash (shared code)
-- Search filtering works correctly
-
-### 3. Cache Hit Rate = AI Cost Savings
+### 1. Vector ID Format
 
 ```
-Cache Hit Rate = cacheHits / (cacheHits + aiProcessed)
-
-Example: 3 users index same library code
-- User 1: aiProcessed=100, cacheHits=0 (pays for AI)
-- User 2: aiProcessed=0, cacheHits=100 (FREE!)
-- User 3: aiProcessed=0, cacheHits=100 (FREE!)
-
-Total AI cost: 100 calls instead of 300 = 67% savings
+{userId}_{projectId}_{contentHash}
 ```
 
-### 4. Vectorize V2 API
+| Component | Example | Purpose |
+|-----------|---------|---------|
+| userId | `alice` | From auth token - isolates users |
+| projectId | `my-project` | From request - isolates projects |
+| contentHash | `abc123` | SHA-256 of code content |
 
-```typescript
-const response = await vectorize.query(embedding, {
-    topK: 20,
-    returnMetadata: 'all',  // V2: 'all' | 'indexed' | 'none'
-    returnValues: true,     // Required for accurate scores
-});
-```
+### 2. Cache Hit Rate = Cost Savings
 
-### 5. Batch Processing Limits
+The cache hit rate directly translates to AI cost savings. When multiple users index the same code (common libraries, utilities, boilerplate), only the first user pays the AI processing cost. All subsequent users get instant cache hits with zero AI cost.
 
-| Operation | Batch Size | Reason |
-|-----------|------------|--------|
-| Summarization | 50 chunks | LLM context window |
-| Embeddings | 100 texts | API efficiency |
-| Vectorize Upsert | 100 vectors | API limit |
-| KV Operations | Unlimited | But use Promise.all |
+For example, if three users index the same 100-chunk library: User 1 processes all 100 chunks with AI (pays full cost), while Users 2 and 3 get 100% cache hits (completely free). This results in 67% total cost savings. In production environments with many users sharing common code patterns, savings typically reach 70-90%.
 
-## Part 6: Troubleshooting
+### 3. Zero Vector Filtering
 
-### Issue: Search returns `-1` scores
-
-**Cause**: Zero vectors stored in Vectorize (AI failed, old cached data)
-
-**Fix**:
-```bash
-# Delete and recreate Vectorize index
-npx wrangler vectorize delete vectorize-poc --force
-npx wrangler vectorize create vectorize-poc --dimensions=1024 --metric=cosine
-
-# Clear KV cache
-npx wrangler kv:key list --namespace-id=YOUR_KV_ID | jq -r '.[].name' | \
-  xargs -I {} npx wrangler kv:key delete {} --namespace-id=YOUR_KV_ID
-```
-
-### Issue: `cacheHits > 0` but `vectorsStored = 0`
-
-**Cause**: Cached embeddings are zero vectors from previous failures
-
-**Fix**: Clear embedding cache entries:
-```bash
-npx wrangler kv:key delete "embedding:hash001" --namespace-id=YOUR_KV_ID
-```
-
-### Issue: AI timeout errors
-
-**Cause**: Workers AI rate limiting or cold start
-
-**Fix**: Increase timeout and add retry logic (already implemented)
-
-### Viewing Worker Logs
-
-```bash
-npx wrangler tail --format=pretty
-```
+AI can fail. When it does, zero vectors are returned and filtered:
+- Never cached (prevents cache poisoning)
+- Never stored in Vectorize (prevents -1 scores)
 
 ## Conclusion
 
@@ -1088,31 +607,9 @@ You've built a production-ready AI-powered code indexing system with:
 4. **Semantic search**: Natural language code discovery
 5. **Two-phase sync**: Minimal data transfer, maximum efficiency
 
-### Architecture Summary
-
-```
-┌─────────────────────────────────────────────────────────────────┐
-│                    Cloudflare Edge Network                       │
-├─────────────────────────────────────────────────────────────────┤
-│  ┌─────────────┐    ┌─────────────┐    ┌─────────────────────┐  │
-│  │   Workers   │───▶│  Workers AI │───▶│     Vectorize       │  │
-│  │   (Hono)    │    │  (Qwen+BGE) │    │  (Multi-tenant)     │  │
-│  └─────────────┘    └─────────────┘    └─────────────────────┘  │
-│         │                                        ▲               │
-│         ▼                                        │               │
-│  ┌─────────────────────────────────────────────────────────────┐│
-│  │                    KV Namespace                              ││
-│  │  ┌──────────────────┐  ┌────────────────────────────────┐   ││
-│  │  │  Merkle Roots    │  │    Global Embedding Cache      │   ││
-│  │  │  (per user/proj) │  │    (shared across users)       │   ││
-│  │  └──────────────────┘  └────────────────────────────────┘   ││
-│  └─────────────────────────────────────────────────────────────┘│
-└─────────────────────────────────────────────────────────────────┘
-```
-
 ### Next Steps
 
-- Integrate with the Phase 1 client from Lab-08 for end-to-end testing
+- Integrate with the Phase 1 client for end-to-end testing
 - Add authentication with proper JWT validation
 - Implement vector deletion for removed chunks
 - Add monitoring and alerting for AI failures

@@ -1,3 +1,5 @@
+
+//
 /**
  * Authentication module
  */
@@ -22,7 +24,7 @@ export function login(username: string, password: string): User | null {
 export function logout(userId: string): void {
     console.log(`User ${userId} logged out at ${new Date().toISOString()}`);
 }
-
+// none of the file exists
 export class AuthService {
     private currentUser: User | null = null;
 
