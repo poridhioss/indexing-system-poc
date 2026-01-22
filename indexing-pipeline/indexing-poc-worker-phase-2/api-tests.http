@@ -11,7 +11,7 @@
 
 @baseUrl = https://indexing-poc-phase-2.fazlulkarim362.workers.dev
 @localUrl = http://127.0.0.1:8787
-@authTokenUserA = dev-token-12345
+@authTokenUserA = dev-token-fazlul-user-1
 @authTokenUserB = dev-token-67890
 @projectIdUserA = alice-project-v3
 @projectIdUserB = bob-project-v3
@@ -40,7 +40,7 @@ Content-Type: application/json
 
 {
   "projectId": "{{projectIdUserA}}",
-  "merkleRoot": "abc123",
+  "merkleRoot": "fazlul-karim-123",
   "chunks": []
 }
 
@@ -52,7 +52,7 @@ Authorization: Bearer {{authTokenUserA}}
 
 {
   "projectId": "{{projectIdUserA}}",
-  "merkleRoot": "merkle-alice-001",
+  "merkleRoot": "xyz-abcd-123",
   "chunks": [
     {
       "hash": "hash001",

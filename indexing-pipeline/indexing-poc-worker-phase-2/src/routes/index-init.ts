@@ -1,4 +1,5 @@
 import { Hono } from 'hono';
+import * as Sentry from '@sentry/cloudflare';
 import type {
     Env,
     Variables,
@@ -39,6 +40,11 @@ indexInit.post('/', async (c) => {
     try {
         body = await c.req.json<IndexInitRequest>();
     } catch {
+        Sentry.captureMessage('Validation failed: Invalid JSON body', {
+            level: 'warning',
+            tags: { validation_error: 'invalid_json', endpoint: 'index_init' },
+            extra: { path: c.req.path, method: c.req.method, userId },
+        });
         const error: ErrorResponse = {
             error: 'Bad Request',
             message: 'Invalid JSON body',
@@ -48,6 +54,11 @@ indexInit.post('/', async (c) => {
 
     // Validate required fields
     if (!body.projectId) {
+        Sentry.captureMessage('Validation failed: Missing projectId', {
+            level: 'warning',
+            tags: { validation_error: 'missing_projectId', endpoint: 'index_init' },
+            extra: { path: c.req.path, userId },
+        });
         const error: ErrorResponse = {
             error: 'Bad Request',
             message: 'projectId is required',
@@ -56,6 +67,11 @@ indexInit.post('/', async (c) => {
     }
 
     if (!body.merkleRoot) {
+        Sentry.captureMessage('Validation failed: Missing merkleRoot', {
+            level: 'warning',
+            tags: { validation_error: 'missing_merkleRoot', endpoint: 'index_init' },
+            extra: { path: c.req.path, userId, projectId: body.projectId },
+        });
         const error: ErrorResponse = {
             error: 'Bad Request',
             message: 'merkleRoot is required',
@@ -64,6 +80,11 @@ indexInit.post('/', async (c) => {
     }
 
     if (!body.chunks || !Array.isArray(body.chunks)) {
+        Sentry.captureMessage('Validation failed: Missing or invalid chunks array', {
+            level: 'warning',
+            tags: { validation_error: 'missing_chunks', endpoint: 'index_init' },
+            extra: { path: c.req.path, userId, projectId: body.projectId },
+        });
         const error: ErrorResponse = {
             error: 'Bad Request',
             message: 'chunks array is required',
@@ -72,6 +93,22 @@ indexInit.post('/', async (c) => {
     }
 
     const { projectId, merkleRoot, chunks } = body;
+
+    // Track operation start
+    Sentry.addBreadcrumb({
+        category: 'indexing',
+        message: 'Index init started',
+        level: 'info',
+        data: { projectId, chunksCount: chunks.length, merkleRoot },
+    });
+
+    // Set operation context for debugging
+    Sentry.setContext('indexing_operation', {
+        projectId,
+        userId,
+        chunksCount: chunks.length,
+        merkleRoot,
+    });
 
     console.log(`[Init] Processing ${chunks.length} chunks for project ${projectId}`);
 
@@ -122,11 +159,27 @@ indexInit.post('/', async (c) => {
                 `[Init] Cache hits: ${cacheHits}, Cache misses: ${uncachedChunks.length}`
             );
 
+            // Track cache results
+            Sentry.addBreadcrumb({
+                category: 'cache',
+                message: 'Embedding cache checked',
+                level: 'info',
+                data: { hits: cacheHits, misses: uncachedChunks.length },
+            });
+
             // Process uncached chunks with AI
             const newSummaries: string[] = [];
             const newEmbeddings: number[][] = [];
 
             if (uncachedChunks.length > 0) {
+                // Track AI processing start
+                Sentry.addBreadcrumb({
+                    category: 'ai',
+                    message: 'AI processing started',
+                    level: 'info',
+                    data: { chunksToProcess: uncachedChunks.length },
+                });
+
                 console.log(
                     `[Init] Generating summaries for ${uncachedChunks.length} uncached chunks`
                 );
@@ -143,6 +196,16 @@ indexInit.post('/', async (c) => {
                     console.error(
                         `[Init] Summary count mismatch: ${summaries.length} vs ${uncachedChunks.length}`
                     );
+                    Sentry.captureMessage('AI Error: Summary count mismatch', {
+                        level: 'error',
+                        tags: { ai_error: 'summary_mismatch', endpoint: 'index_init', projectId },
+                        extra: {
+                            expected: uncachedChunks.length,
+                            received: summaries.length,
+                            userId,
+                            chunksCount: chunks.length,
+                        },
+                    });
                     aiErrors.push('Summary count mismatch');
                     const response: IndexInitResponse = {
                         status: 'partial',
@@ -166,6 +229,16 @@ indexInit.post('/', async (c) => {
                     console.error(
                         `[Init] Embedding count mismatch: ${embeddings.length} vs ${summaries.length}`
                     );
+                    Sentry.captureMessage('AI Error: Embedding count mismatch', {
+                        level: 'error',
+                        tags: { ai_error: 'embedding_mismatch', endpoint: 'index_init', projectId },
+                        extra: {
+                            expected: summaries.length,
+                            received: embeddings.length,
+                            userId,
+                            chunksCount: chunks.length,
+                        },
+                    });
                     aiErrors.push('Embedding count mismatch');
                     const response: IndexInitResponse = {
                         status: 'partial',
@@ -255,6 +328,14 @@ indexInit.post('/', async (c) => {
             );
             vectorsStored = await upsertChunks(c.env.VECTORIZE, vectorizeChunks);
 
+            // Track vectorize completion
+            Sentry.addBreadcrumb({
+                category: 'vectorize',
+                message: 'Vectors upserted',
+                level: 'info',
+                data: { vectorsStored, totalChunks: vectorizeChunks.length },
+            });
+
             if (vectorsStored < vectorizeChunks.length) {
                 aiErrors.push(
                     `${vectorizeChunks.length - vectorsStored} chunks had zero vectors (AI embedding failed)`
@@ -265,8 +346,29 @@ indexInit.post('/', async (c) => {
                 error instanceof Error ? error.message : 'AI processing failed';
             console.error('[Init] AI processing error:', message);
             aiErrors.push(message);
+
+            // Report to Sentry (but don't throw - handle gracefully)
+            Sentry.captureException(error, {
+                tags: {
+                    operation: 'index_init',
+                    projectId,
+                },
+                extra: {
+                    chunksCount: chunks.length,
+                    cacheHits,
+                    aiProcessed,
+                },
+            });
         }
     }
+
+    // Track operation completion
+    Sentry.addBreadcrumb({
+        category: 'indexing',
+        message: 'Index init completed',
+        level: aiErrors.length > 0 ? 'warning' : 'info',
+        data: { aiProcessed, cacheHits, vectorsStored, hasErrors: aiErrors.length > 0 },
+    });
 
     const response: IndexInitResponse = {
         status: aiErrors.length > 0 ? 'partial' : 'indexed',

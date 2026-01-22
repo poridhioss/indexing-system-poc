@@ -1,6 +1,7 @@
 import { Hono } from 'hono';
 import { cors } from 'hono/cors';
 import { logger } from 'hono/logger';
+import * as Sentry from '@sentry/cloudflare';
 import type { Env, Variables } from './types';
 import { authMiddleware } from './middleware/auth';
 import health from './routes/health';
@@ -66,16 +67,54 @@ app.notFound((c) => {
     );
 });
 
-// Error handler
+// Error handler with Sentry
 app.onError((err, c) => {
+    // Add error breadcrumb
+    Sentry.addBreadcrumb({
+        category: 'error',
+        message: 'Unhandled error caught',
+        level: 'error',
+        data: { path: c.req.path, error: err.message },
+    });
+
+    // Capture exception with context
+    Sentry.captureException(err, {
+        tags: {
+            handler: 'global_error_handler',
+            path: c.req.path,
+        },
+        extra: {
+            method: c.req.method,
+            url: c.req.url,
+        },
+    });
+
     console.error('Unhandled error:', err);
     return c.json(
         {
             error: 'Internal Server Error',
             message: err.message || 'An unexpected error occurred',
+            eventId: Sentry.lastEventId(),
         },
         500
     );
 });
 
-export default app;
+// Wrap with Sentry for error tracking and performance monitoring
+export default Sentry.withSentry(
+    (env: Env) => ({
+        dsn: env.SENTRY_DSN,
+        release: env.CF_VERSION_METADATA?.id || 'development',
+        environment: env.SENTRY_DSN ? 'production' : 'development',
+        tracesSampleRate: 1.0, // 100% for POC, reduce in production
+        sendDefaultPii: true,
+        beforeBreadcrumb(breadcrumb: Sentry.Breadcrumb) {
+            // Filter out noisy console breadcrumbs
+            if (breadcrumb.category === 'console') {
+                return null;
+            }
+            return breadcrumb;
+        },
+    }),
+    app
+);

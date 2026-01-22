@@ -1,3 +1,4 @@
+import * as Sentry from '@sentry/cloudflare';
 import type { Ai, AiTextGenerationOutput, AiEmbeddingOutput } from '../types';
 
 const SUMMARIZATION_MODEL = '@cf/qwen/qwen2.5-coder-32b-instruct';
@@ -178,53 +179,65 @@ export async function generateSummaries(
 ): Promise<string[]> {
     if (chunks.length === 0) return [];
 
-    // Track original indices for reassembly
-    const chunksWithIndex = chunks.map((chunk, i) => ({
-        ...chunk,
-        originalIndex: i,
-    }));
+    return await Sentry.startSpan(
+        {
+            name: 'generate-summaries',
+            op: 'ai.summarize',
+            attributes: {
+                'ai.model': SUMMARIZATION_MODEL,
+                'ai.chunks_count': chunks.length,
+            },
+        },
+        async () => {
+            // Track original indices for reassembly
+            const chunksWithIndex = chunks.map((chunk, i) => ({
+                ...chunk,
+                originalIndex: i,
+            }));
 
-    // Group by language for better prompts
-    const languageGroups = groupByLanguage(chunksWithIndex);
+            // Group by language for better prompts
+            const languageGroups = groupByLanguage(chunksWithIndex);
 
-    // Result array (will be filled in original order)
-    const allSummaries: string[] = new Array(chunks.length);
+            // Result array (will be filled in original order)
+            const allSummaries: string[] = new Array(chunks.length);
 
-    // Process each language group
-    for (const [languageId, langChunks] of languageGroups) {
-        console.log(`[AI] Processing ${langChunks.length} ${languageId} chunks`);
+            // Process each language group
+            for (const [languageId, langChunks] of languageGroups) {
+                console.log(`[AI] Processing ${langChunks.length} ${languageId} chunks`);
 
-        // Process in batches of 50
-        for (let i = 0; i < langChunks.length; i += SUMMARIZATION_BATCH_SIZE) {
-            const batch = langChunks.slice(i, i + SUMMARIZATION_BATCH_SIZE);
-            const batchNum = Math.floor(i / SUMMARIZATION_BATCH_SIZE) + 1;
-            const totalBatches = Math.ceil(
-                langChunks.length / SUMMARIZATION_BATCH_SIZE
-            );
+                // Process in batches of 50
+                for (let i = 0; i < langChunks.length; i += SUMMARIZATION_BATCH_SIZE) {
+                    const batch = langChunks.slice(i, i + SUMMARIZATION_BATCH_SIZE);
+                    const batchNum = Math.floor(i / SUMMARIZATION_BATCH_SIZE) + 1;
+                    const totalBatches = Math.ceil(
+                        langChunks.length / SUMMARIZATION_BATCH_SIZE
+                    );
 
-            console.log(
-                `[AI] Summarizing ${languageId} batch ${batchNum}/${totalBatches} (${batch.length} chunks)`
-            );
+                    console.log(
+                        `[AI] Summarizing ${languageId} batch ${batchNum}/${totalBatches} (${batch.length} chunks)`
+                    );
 
-            // Get summaries for this batch (with timeout + fallback)
-            const batchSummaries = await summarizeBatch(ai, batch);
+                    // Get summaries for this batch (with timeout + fallback)
+                    const batchSummaries = await summarizeBatch(ai, batch);
 
-            // Map summaries back to original indices
-            for (let j = 0; j < batch.length; j++) {
-                allSummaries[batch[j].originalIndex] = batchSummaries[j];
+                    // Map summaries back to original indices
+                    for (let j = 0; j < batch.length; j++) {
+                        allSummaries[batch[j].originalIndex] = batchSummaries[j];
+                    }
+                }
             }
-        }
-    }
 
-    // Final validation: ensure no undefined values
-    for (let i = 0; i < allSummaries.length; i++) {
-        if (!allSummaries[i]) {
-            console.warn(`[AI] Missing summary at index ${i}, using fallback`);
-            allSummaries[i] = 'Code chunk';
-        }
-    }
+            // Final validation: ensure no undefined values
+            for (let i = 0; i < allSummaries.length; i++) {
+                if (!allSummaries[i]) {
+                    console.warn(`[AI] Missing summary at index ${i}, using fallback`);
+                    allSummaries[i] = 'Code chunk';
+                }
+            }
 
-    return allSummaries;
+            return allSummaries;
+        }
+    );
 }
 
 /**
@@ -241,59 +254,71 @@ export async function generateEmbeddings(
 ): Promise<number[][]> {
     if (texts.length === 0) return [];
 
-    const allEmbeddings: number[][] = [];
+    return await Sentry.startSpan(
+        {
+            name: 'generate-embeddings',
+            op: 'ai.embed',
+            attributes: {
+                'ai.model': EMBEDDING_MODEL,
+                'ai.texts_count': texts.length,
+            },
+        },
+        async () => {
+            const allEmbeddings: number[][] = [];
 
-    // Process in batches of 100
-    for (let i = 0; i < texts.length; i += EMBEDDING_BATCH_SIZE) {
-        const batch = texts.slice(i, i + EMBEDDING_BATCH_SIZE);
-        const batchNum = Math.floor(i / EMBEDDING_BATCH_SIZE) + 1;
-        const totalBatches = Math.ceil(texts.length / EMBEDDING_BATCH_SIZE);
+            // Process in batches of 100
+            for (let i = 0; i < texts.length; i += EMBEDDING_BATCH_SIZE) {
+                const batch = texts.slice(i, i + EMBEDDING_BATCH_SIZE);
+                const batchNum = Math.floor(i / EMBEDDING_BATCH_SIZE) + 1;
+                const totalBatches = Math.ceil(texts.length / EMBEDDING_BATCH_SIZE);
 
-        console.log(
-            `[AI] Embedding batch ${batchNum}/${totalBatches} (${batch.length} texts)`
-        );
+                console.log(
+                    `[AI] Embedding batch ${batchNum}/${totalBatches} (${batch.length} texts)`
+                );
 
-        // Call AI with timeout
-        const response = await withTimeout(
-            ai.run(EMBEDDING_MODEL, {
-                text: batch,
-            }),
-            AI_TIMEOUT_MS,
-            `Embedding batch ${batchNum}`
-        );
+                // Call AI with timeout
+                const response = await withTimeout(
+                    ai.run(EMBEDDING_MODEL, {
+                        text: batch,
+                    }),
+                    AI_TIMEOUT_MS,
+                    `Embedding batch ${batchNum}`
+                );
 
-        const embeddingResponse = response as AiEmbeddingOutput | null;
+                const embeddingResponse = response as AiEmbeddingOutput | null;
 
-        if (
-            embeddingResponse &&
-            embeddingResponse.data &&
-            embeddingResponse.data.length === batch.length
-        ) {
-            // Success - add embeddings
-            allEmbeddings.push(...embeddingResponse.data);
-        } else {
-            // Fallback - use zero vectors (will have low similarity scores)
-            console.warn(
-                `[AI] Embedding batch ${batchNum} failed, using zero vectors for ${batch.length} texts`
-            );
-            for (let j = 0; j < batch.length; j++) {
-                allEmbeddings.push(new Array(EMBEDDING_DIMENSIONS).fill(0));
+                if (
+                    embeddingResponse &&
+                    embeddingResponse.data &&
+                    embeddingResponse.data.length === batch.length
+                ) {
+                    // Success - add embeddings
+                    allEmbeddings.push(...embeddingResponse.data);
+                } else {
+                    // Fallback - use zero vectors (will have low similarity scores)
+                    console.warn(
+                        `[AI] Embedding batch ${batchNum} failed, using zero vectors for ${batch.length} texts`
+                    );
+                    for (let j = 0; j < batch.length; j++) {
+                        allEmbeddings.push(new Array(EMBEDDING_DIMENSIONS).fill(0));
+                    }
+                }
             }
-        }
-    }
 
-    // Final validation
-    if (allEmbeddings.length !== texts.length) {
-        console.error(
-            `[AI] Embedding count mismatch: got ${allEmbeddings.length}, expected ${texts.length}`
-        );
-        // Pad with zero vectors if needed
-        while (allEmbeddings.length < texts.length) {
-            allEmbeddings.push(new Array(EMBEDDING_DIMENSIONS).fill(0));
-        }
-    }
+            // Final validation
+            if (allEmbeddings.length !== texts.length) {
+                console.error(
+                    `[AI] Embedding count mismatch: got ${allEmbeddings.length}, expected ${texts.length}`
+                );
+                // Pad with zero vectors if needed
+                while (allEmbeddings.length < texts.length) {
+                    allEmbeddings.push(new Array(EMBEDDING_DIMENSIONS).fill(0));
+                }
+            }
 
-    return allEmbeddings;
+            return allEmbeddings;
+        }
+    );
 }
 
 /**

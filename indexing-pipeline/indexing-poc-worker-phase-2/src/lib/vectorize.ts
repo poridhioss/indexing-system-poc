@@ -1,3 +1,4 @@
+import * as Sentry from '@sentry/cloudflare';
 import type {
     VectorizeIndex,
     ChunkMetadata,
@@ -53,61 +54,73 @@ export async function upsertChunks(
 ): Promise<number> {
     if (chunks.length === 0) return 0;
 
-    // Filter out zero vectors - these are failed AI embeddings
-    const validChunks = chunks.filter((chunk) => {
-        if (isZeroVector(chunk.embedding)) {
-            console.warn(
-                `[Vectorize] Skipping chunk ${chunk.hash} - zero vector (AI embedding failed)`
-            );
-            return false;
-        }
-        return true;
-    });
-
-    if (validChunks.length === 0) {
-        console.warn('[Vectorize] No valid vectors to upsert (all zero vectors)');
-        return 0;
-    }
-
-    if (validChunks.length < chunks.length) {
-        console.warn(
-            `[Vectorize] Filtered out ${chunks.length - validChunks.length} zero vectors`
-        );
-    }
-
-    const vectors: VectorizeVector[] = validChunks.map((chunk) => ({
-        // POC: Use composite ID for complete user isolation (shortened to fit 64-byte limit)
-        id: generateVectorId(chunk.metadata.userId, chunk.metadata.projectId, chunk.hash),
-        values: chunk.embedding,
-        metadata: {
-            projectId: chunk.metadata.projectId,
-            userId: chunk.metadata.userId,
-            summary: chunk.metadata.summary,
-            type: chunk.metadata.type,
-            name: chunk.metadata.name || '',
-            languageId: chunk.metadata.languageId,
-            lineStart: chunk.metadata.lines[0],
-            lineEnd: chunk.metadata.lines[1],
-            charCount: chunk.metadata.charCount,
-            filePath: chunk.metadata.filePath,
+    return await Sentry.startSpan(
+        {
+            name: 'vectorize-upsert',
+            op: 'db.vectorize',
+            attributes: {
+                'db.operation': 'upsert',
+                'db.chunks_count': chunks.length,
+            },
         },
-    }));
+        async () => {
+            // Filter out zero vectors - these are failed AI embeddings
+            const validChunks = chunks.filter((chunk) => {
+                if (isZeroVector(chunk.embedding)) {
+                    console.warn(
+                        `[Vectorize] Skipping chunk ${chunk.hash} - zero vector (AI embedding failed)`
+                    );
+                    return false;
+                }
+                return true;
+            });
 
-    // Vectorize supports batch upsert up to 1000 vectors
-    // We use 100 for safety
-    for (let i = 0; i < vectors.length; i += VECTORIZE_BATCH_SIZE) {
-        const batch = vectors.slice(i, i + VECTORIZE_BATCH_SIZE);
-        const batchNum = Math.floor(i / VECTORIZE_BATCH_SIZE) + 1;
-        const totalBatches = Math.ceil(vectors.length / VECTORIZE_BATCH_SIZE);
+            if (validChunks.length === 0) {
+                console.warn('[Vectorize] No valid vectors to upsert (all zero vectors)');
+                return 0;
+            }
 
-        console.log(
-            `[Vectorize] Upserting batch ${batchNum}/${totalBatches} (${batch.length} vectors)`
-        );
+            if (validChunks.length < chunks.length) {
+                console.warn(
+                    `[Vectorize] Filtered out ${chunks.length - validChunks.length} zero vectors`
+                );
+            }
 
-        await vectorize.upsert(batch);
-    }
+            const vectors: VectorizeVector[] = validChunks.map((chunk) => ({
+                // POC: Use composite ID for complete user isolation (shortened to fit 64-byte limit)
+                id: generateVectorId(chunk.metadata.userId, chunk.metadata.projectId, chunk.hash),
+                values: chunk.embedding,
+                metadata: {
+                    projectId: chunk.metadata.projectId,
+                    userId: chunk.metadata.userId,
+                    summary: chunk.metadata.summary,
+                    type: chunk.metadata.type,
+                    name: chunk.metadata.name || '',
+                    languageId: chunk.metadata.languageId,
+                    lineStart: chunk.metadata.lines[0],
+                    lineEnd: chunk.metadata.lines[1],
+                    charCount: chunk.metadata.charCount,
+                    filePath: chunk.metadata.filePath,
+                },
+            }));
 
-    return validChunks.length;
+            // Vectorize supports batch upsert up to 1000 vectors
+            // We use 100 for safety
+            for (let i = 0; i < vectors.length; i += VECTORIZE_BATCH_SIZE) {
+                const batch = vectors.slice(i, i + VECTORIZE_BATCH_SIZE);
+                const batchNum = Math.floor(i / VECTORIZE_BATCH_SIZE) + 1;
+                const totalBatches = Math.ceil(vectors.length / VECTORIZE_BATCH_SIZE);
+
+                console.log(
+                    `[Vectorize] Upserting batch ${batchNum}/${totalBatches} (${batch.length} vectors)`
+                );
+
+                await vectorize.upsert(batch);
+            }
+
+            return validChunks.length;
+        }
+    );
 }
 
 /**

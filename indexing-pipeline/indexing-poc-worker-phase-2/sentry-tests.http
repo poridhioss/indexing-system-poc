@@ -1,0 +1,350 @@
+### ==============================================
+### SENTRY TEST CASES FOR /v1/index/init
+### ==============================================
+### Run these to generate events in Sentry dashboard
+### Base URL: https://indexing-poc-phase-2.fazlulkarim362.workers.dev
+
+@baseUrl = https://indexing-poc-phase-2.fazlulkarim362.workers.dev
+
+
+### ==============================================
+### AUTH FAILURES (appear in Issues as warnings)
+### ==============================================
+
+### 1. Missing Authorization header
+### Sentry: captureMessage "Auth failed: Missing Authorization header"
+### Tags: auth_failure: missing_header
+POST {{baseUrl}}/v1/index/init
+Content-Type: application/json
+
+{
+    "projectId": "test-project"
+}
+
+###
+
+### 2. Invalid Authorization header format (no Bearer prefix)
+### Sentry: captureMessage "Auth failed: Invalid Authorization header format"
+### Tags: auth_failure: invalid_format
+POST {{baseUrl}}/v1/index/init
+Content-Type: application/json
+Authorization: Basic some-token
+
+{
+    "projectId": "test-project"
+}
+
+###
+
+### 3. Invalid token format (not dev-token-)
+### Sentry: captureMessage "Auth failed: Invalid token format"
+### Tags: auth_failure: invalid_token
+POST {{baseUrl}}/v1/index/init
+Content-Type: application/json
+Authorization: Bearer wrong-format-token
+
+{
+    "projectId": "test-project"
+}
+
+###
+
+### 4. Empty userId (dev-token- with nothing after)
+### Sentry: captureMessage "Auth failed: Token missing userId"
+### Tags: auth_failure: missing_userid
+POST {{baseUrl}}/v1/index/init
+Content-Type: application/json
+Authorization: Bearer dev-token-
+
+{
+    "projectId": "test-project"
+}
+
+
+### ==============================================
+### VALIDATION ERRORS (400 Bad Request - Issues as warnings)
+### ==============================================
+
+### 5. Invalid JSON body
+### Sentry: captureMessage "Validation failed: Invalid JSON body"
+### Tags: validation_error: invalid_json
+POST {{baseUrl}}/v1/index/init
+Content-Type: application/json
+Authorization: Bearer dev-token-testuser
+
+{ invalid json here }
+
+###
+
+### 6. Missing projectId
+### Sentry: captureMessage "Validation failed: Missing projectId"
+### Tags: validation_error: missing_projectId
+POST {{baseUrl}}/v1/index/init
+Content-Type: application/json
+Authorization: Bearer dev-token-testuser
+
+{
+    "merkleRoot": "abc123",
+    "chunks": []
+}
+
+###
+
+### 7. Missing merkleRoot
+### Sentry: captureMessage "Validation failed: Missing merkleRoot"
+### Tags: validation_error: missing_merkleRoot
+POST {{baseUrl}}/v1/index/init
+Content-Type: application/json
+Authorization: Bearer dev-token-testuser
+
+{
+    "projectId": "test-project",
+    "chunks": []
+}
+
+###
+
+### 8. Missing chunks array
+### Sentry: captureMessage "Validation failed: Missing or invalid chunks array"
+### Tags: validation_error: missing_chunks
+POST {{baseUrl}}/v1/index/init
+Content-Type: application/json
+Authorization: Bearer dev-token-testuser
+
+{
+    "projectId": "test-project",
+    "merkleRoot": "abc123"
+}
+
+
+### ==============================================
+### SUCCESSFUL REQUESTS (Traces with full breadcrumbs)
+### ==============================================
+
+### 9. Empty chunks (minimal successful request)
+### Sentry Trace: Shows auth + indexing breadcrumbs
+### Breadcrumbs: http -> auth -> indexing started -> indexing completed
+POST {{baseUrl}}/v1/index/init
+Content-Type: application/json
+Authorization: Bearer dev-token-alice
+
+{
+    "projectId": "sentry-test-empty",
+    "merkleRoot": "merkle-empty-123",
+    "chunks": []
+}
+
+###
+
+### 10. Single chunk (full AI flow)
+### Sentry Trace: Full flow with spans
+### Spans: generate-summaries (ai.summarize) -> generate-embeddings (ai.embed) -> vectorize-upsert (db.vectorize)
+### Breadcrumbs: http -> auth -> indexing started -> cache -> ai -> vectorize -> indexing completed
+POST {{baseUrl}}/v1/index/init
+Content-Type: application/json
+Authorization: Bearer dev-token-bob
+
+{
+    "projectId": "sentry-test-single",
+    "merkleRoot": "merkle-single-456",
+    "chunks": [
+        {
+            "hash": "sentry-test-hash-001",
+            "code": "function greet(name) {\n  return `Hello, ${name}!`;\n}",
+            "type": "function",
+            "name": "greet",
+            "languageId": "javascript",
+            "lines": [1, 3],
+            "charCount": 52,
+            "filePath": "src/utils/greet.js"
+        }
+    ]
+}
+
+###
+
+### 11. Multiple chunks (batch processing)
+### Sentry Trace: Multiple AI operations
+POST {{baseUrl}}/v1/index/init
+Content-Type: application/json
+Authorization: Bearer dev-token-charlie
+
+{
+    "projectId": "sentry-test-batch",
+    "merkleRoot": "merkle-batch-789",
+    "chunks": [
+        {
+            "hash": "sentry-batch-hash-001",
+            "code": "export const add = (a, b) => a + b;",
+            "type": "function",
+            "name": "add",
+            "languageId": "typescript",
+            "lines": [1, 1],
+            "charCount": 35,
+            "filePath": "src/math.ts"
+        },
+        {
+            "hash": "sentry-batch-hash-002",
+            "code": "export const subtract = (a, b) => a - b;",
+            "type": "function",
+            "name": "subtract",
+            "languageId": "typescript",
+            "lines": [3, 3],
+            "charCount": 40,
+            "filePath": "src/math.ts"
+        },
+        {
+            "hash": "sentry-batch-hash-003",
+            "code": "export const multiply = (a, b) => a * b;",
+            "type": "function",
+            "name": "multiply",
+            "languageId": "typescript",
+            "lines": [5, 5],
+            "charCount": 40,
+            "filePath": "src/math.ts"
+        }
+    ]
+}
+
+
+### ==============================================
+### ERROR SCENARIOS (captureException in Issues)
+### ==============================================
+
+### 12. Chunk with null lines (may cause error in vectorize)
+### This triggers the catch block -> captureException
+### Sentry Issues: Error with full breadcrumb trail
+POST {{baseUrl}}/v1/index/init
+Content-Type: application/json
+Authorization: Bearer dev-token-dave
+
+{
+    "projectId": "sentry-test-error",
+    "merkleRoot": "merkle-error-999",
+    "chunks": [
+        {
+            "hash": "sentry-error-hash-001",
+            "code": "const x = 1;",
+            "type": "variable",
+            "name": "x",
+            "languageId": "javascript",
+            "lines": null,
+            "charCount": 12,
+            "filePath": "src/broken.js"
+        }
+    ]
+}
+
+###
+
+### 13. Chunk with invalid type
+### May cause processing errors
+POST {{baseUrl}}/v1/index/init
+Content-Type: application/json
+Authorization: Bearer dev-token-eve
+
+{
+    "projectId": "sentry-test-invalid",
+    "merkleRoot": "merkle-invalid-111",
+    "chunks": [
+        {
+            "hash": "sentry-invalid-hash-001",
+            "code": "",
+            "type": "unknown_type",
+            "name": null,
+            "languageId": "",
+            "lines": [-1, -1],
+            "charCount": 0,
+            "filePath": ""
+        }
+    ]
+}
+
+
+### ==============================================
+### SUMMARY: What appears where in Sentry
+### ==============================================
+###
+### ISSUES TAB (captureMessage / captureException):
+### - Test 1-4: Auth failures (warnings)
+### - Test 5-8: Validation errors (warnings)
+### - Test 13: Processing errors (errors)
+###
+### TRACES/PERFORMANCE TAB:
+### - All requests create traces
+### - Test 9: Empty chunks (minimal trace - no AI spans)
+### - Test 10-12: Show full span waterfall with AI processing
+###   - generate-summaries (ai.summarize)
+###   - generate-embeddings (ai.embed)
+###   - vectorize-upsert (db.vectorize)
+###
+### BREADCRUMBS (attached to Issues):
+### - [http] POST /v1/index/init
+### - [auth] Authenticated: {userId}
+### - [indexing] Index init started
+### - [cache] Embedding cache checked
+### - [ai] AI processing started
+### - [vectorize] Vectors upserted
+### - [indexing] Index init completed
+###
+### TAGS (searchable in Sentry):
+### - user_id: alice, bob, charlie, etc.
+### - auth_failure: missing_header, invalid_format, invalid_token, missing_userid
+### - validation_error: invalid_json, missing_projectId, missing_merkleRoot, missing_chunks
+### - ai_error: summary_mismatch, embedding_mismatch
+### - operation: index_init
+### - projectId: sentry-test-*
+###
+
+
+### ==============================================
+### CURL COMMANDS (copy-paste ready)
+### ==============================================
+###
+### AUTH FAILURES:
+###
+### # 1. Missing Authorization header
+### curl -X POST https://indexing-poc-phase-2.fazlulkarim362.workers.dev/v1/index/init -H "Content-Type: application/json" -d '{"projectId": "test"}'
+###
+### # 2. Invalid header format
+### curl -X POST https://indexing-poc-phase-2.fazlulkarim362.workers.dev/v1/index/init -H "Content-Type: application/json" -H "Authorization: Basic token" -d '{"projectId": "test"}'
+###
+### # 3. Invalid token format
+### curl -X POST https://indexing-poc-phase-2.fazlulkarim362.workers.dev/v1/index/init -H "Content-Type: application/json" -H "Authorization: Bearer wrong-token" -d '{"projectId": "test"}'
+###
+### # 4. Empty userId
+### curl -X POST https://indexing-poc-phase-2.fazlulkarim362.workers.dev/v1/index/init -H "Content-Type: application/json" -H "Authorization: Bearer dev-token-" -d '{"projectId": "test"}'
+###
+### VALIDATION ERRORS:
+###
+### # 5. Invalid JSON
+### curl -X POST https://indexing-poc-phase-2.fazlulkarim362.workers.dev/v1/index/init -H "Content-Type: application/json" -H "Authorization: Bearer dev-token-testuser" -d '{ invalid }'
+###
+### # 6. Missing projectId
+### curl -X POST https://indexing-poc-phase-2.fazlulkarim362.workers.dev/v1/index/init -H "Content-Type: application/json" -H "Authorization: Bearer dev-token-testuser" -d '{"merkleRoot": "abc", "chunks": []}'
+###
+### # 7. Missing merkleRoot
+### curl -X POST https://indexing-poc-phase-2.fazlulkarim362.workers.dev/v1/index/init -H "Content-Type: application/json" -H "Authorization: Bearer dev-token-testuser" -d '{"projectId": "test", "chunks": []}'
+###
+### # 8. Missing chunks
+### curl -X POST https://indexing-poc-phase-2.fazlulkarim362.workers.dev/v1/index/init -H "Content-Type: application/json" -H "Authorization: Bearer dev-token-testuser" -d '{"projectId": "test", "merkleRoot": "abc"}'
+###
+### SUCCESS (Traces):
+###
+### # 9. Empty chunks (minimal trace)
+### curl -X POST https://indexing-poc-phase-2.fazlulkarim362.workers.dev/v1/index/init -H "Content-Type: application/json" -H "Authorization: Bearer dev-token-alice" -d '{"projectId": "test", "merkleRoot": "abc", "chunks": []}'
+###
+### # 10. Single chunk - JavaScript function (full AI flow with spans)
+### curl -X POST https://indexing-poc-phase-2.fazlulkarim362.workers.dev/v1/index/init -H "Content-Type: application/json" -H "Authorization: Bearer dev-token-bob" -d '{"projectId": "sentry-trace-test", "merkleRoot": "trace-001", "chunks": [{"hash": "trace-hash-001", "code": "function greet(name) { return `Hello, ${name}!`; }", "type": "function", "name": "greet", "languageId": "javascript", "lines": [1,3], "charCount": 50, "filePath": "src/greet.js"}]}'
+###
+### # 11. Single chunk - TypeScript class (different language)
+### curl -X POST https://indexing-poc-phase-2.fazlulkarim362.workers.dev/v1/index/init -H "Content-Type: application/json" -H "Authorization: Bearer dev-token-charlie" -d '{"projectId": "sentry-trace-test", "merkleRoot": "trace-002", "chunks": [{"hash": "trace-hash-002", "code": "export class UserService { constructor(private db: Database) {} async findById(id: string) { return this.db.users.find(id); } }", "type": "class", "name": "UserService", "languageId": "typescript", "lines": [1,5], "charCount": 120, "filePath": "src/services/user.ts"}]}'
+###
+### # 12. Multiple chunks - batch processing (shows multiple spans)
+### curl -X POST https://indexing-poc-phase-2.fazlulkarim362.workers.dev/v1/index/init -H "Content-Type: application/json" -H "Authorization: Bearer dev-token-dave" -d '{"projectId": "sentry-batch-test", "merkleRoot": "batch-001", "chunks": [{"hash": "batch-h1", "code": "export const add = (a, b) => a + b;", "type": "function", "name": "add", "languageId": "typescript", "lines": [1,1], "charCount": 35, "filePath": "src/math.ts"}, {"hash": "batch-h2", "code": "export const multiply = (a, b) => a * b;", "type": "function", "name": "multiply", "languageId": "typescript", "lines": [3,3], "charCount": 40, "filePath": "src/math.ts"}, {"hash": "batch-h3", "code": "export const divide = (a, b) => b !== 0 ? a / b : 0;", "type": "function", "name": "divide", "languageId": "typescript", "lines": [5,5], "charCount": 52, "filePath": "src/math.ts"}]}'
+###
+### ERRORS (Issues):
+###
+### # 13. Chunk with null lines (triggers captureException)
+### curl -X POST https://indexing-poc-phase-2.fazlulkarim362.workers.dev/v1/index/init -H "Content-Type: application/json" -H "Authorization: Bearer dev-token-eve" -d '{"projectId": "sentry-error-test", "merkleRoot": "error-001", "chunks": [{"hash": "error-h1", "code": "const broken = true;", "type": "variable", "name": "broken", "languageId": "javascript", "lines": null, "charCount": 20, "filePath": "src/broken.js"}]}'
+###

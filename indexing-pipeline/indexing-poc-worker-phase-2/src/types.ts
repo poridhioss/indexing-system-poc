@@ -335,6 +335,10 @@ export interface Env {
     // Phase 2 bindings (AI + Vectorize)
     AI: Ai;
     VECTORIZE: VectorizeIndex;
+
+    // Sentry bindings
+    SENTRY_DSN: string;
+    CF_VERSION_METADATA: { id: string };
 }
 
 // ============================================

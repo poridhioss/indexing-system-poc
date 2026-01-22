@@ -9,6 +9,7 @@
     "tail": "wrangler tail"
   },
   "dependencies": {
+    "@sentry/cloudflare": "^9.0.0",
     "hono": "^4.6.0"
   },
   "devDependencies": {
